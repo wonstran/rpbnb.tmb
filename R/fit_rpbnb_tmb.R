@@ -21,12 +21,14 @@
 #' @return An object of class \code{rpbnb_tmb_fit}.
 #' @export
 #' @examples
+#' \dontrun{
 #' sim <- simulate_rpbnb_tmb(n = 300,
 #'   beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
 #'   beta2 = c("(Intercept)" = 0.1, x1 = -0.3),
 #'   dispersion = c(m1 = 0.4, m2 = 0.5), seed = 1)
 #' fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = sim$data, draws = 100)
 #' coef(fit)
+#' }
 fit_rpbnb_tmb <- function(formula_1, formula_2, data,
                           random_1 = NULL, random_2 = NULL,
                           draws = 400L, seed = 1234L, start = NULL,
@@ -126,8 +128,10 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     Rloc <- if (total_rand > 0) draws else 1L
     lamLo <- -Inf; lamHi <- Inf
     for (r in seq_len(Rloc)) {
-      eta1 <- if (q1 > 0) xb1 + as.vector(X1[, rand_idx1, drop = FALSE] %*% (s1 * (if (dist1[1] == 0L) qnorm(Z1[r, ]) else Z1[r, ]))) else xb1
-      eta2 <- if (q2 > 0) xb2 + as.vector(X2[, rand_idx2, drop = FALSE] %*% (s2 * (if (dist2[1] == 0L) qnorm(Z2[r, ]) else Z2[r, ]))) else xb2
+      dev1 <- if (q1 > 0) rand_realize(matrix(Z1[r, ], 1, q1), spec1$dist, sign1, start[i1][rand_idx1], s1)$dev[1, ] else numeric(0)
+      dev2 <- if (q2 > 0) rand_realize(matrix(Z2[r, ], 1, q2), spec2$dist, sign2, start[i2][rand_idx2], s2)$dev[1, ] else numeric(0)
+      eta1 <- if (q1 > 0) xb1 + as.vector(X1[, rand_idx1, drop = FALSE] %*% dev1) else xb1
+      eta2 <- if (q2 > 0) xb2 + as.vector(X2[, rand_idx2, drop = FALSE] %*% dev2) else xb2
       mu1_r <- pmin(pmax(exp(eta1), 1e-300), 1e15)
       mu2_r <- pmin(pmax(exp(eta2), 1e-300), 1e15)
       b <- lambda_bounds_vec(c_val(mu1_r, m1_start), c_val(mu2_r, m2_start))
@@ -187,20 +191,15 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     )
   )
 
-  # Extract results
-  par_hat <- obj$env$last.par.best
-  # Map back to full named vector
-  # The TMB parameter vector is obj$par with random effects appended
-  # obj$env$last.par.best contains the full vector
-  full_par <- obj$env$last.par.best[obj$env$par]
   # Build named coefficient vector matching par_names
   coef_vec <- obj$env$last.par.best[seq_along(par_names)]
   names(coef_vec) <- par_names
 
-  # sdreport
+  # sdreport: parameter SEs from fixed-effects summary
   sdr <- TMB::sdreport(obj)
-  se_vec <- as.list(sdr, "Std. Error")
-  # Build full named coef vector matching par_names
+  sdr_sum <- summary(sdr, "fixed")
+  se_vec <- sdr_sum[, "Std. Error"]
+  names(se_vec) <- par_names
 
   # Construct result
   value <- opt$objective
