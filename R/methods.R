@@ -39,11 +39,12 @@ print.rpbnb_tmb_fit <- function(x, ...) {
 
 # Print a coefficient table: 4 digits, no quotes around column names
 .print_tbl <- function(x) {
+  # Format every entry to 4 decimal places
   x <- as.data.frame(x)
   for (j in seq_len(ncol(x))) {
-    if (is.numeric(x[[j]])) x[[j]] <- round(x[[j]], 4)
+    if (is.numeric(x[[j]])) x[[j]] <- sprintf("%.4f", x[[j]])
   }
-  print(noquote(format(x)), print.gap = 2)
+  print(x, print.gap = 3)
 }
 
 #' @export
