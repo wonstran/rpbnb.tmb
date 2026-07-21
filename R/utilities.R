@@ -211,13 +211,14 @@ lambda_bounds_vec <- function(c1, c2) {
     info <- info + diag(ridge, nrow(info))
   }
   vc <- try(solve(info), silent = TRUE)
-  if (inherits(vc, "try-error")) vc <- .pseudo_inv(info)
+  inv_method <- "solve"
+  if (inherits(vc, "try-error")) { vc <- .pseudo_inv(info); inv_method <- "pseudo_inv" }
   dimnames(vc) <- list(par_names, par_names)
   se <- sqrt(pmax(diag(vc), 0)); names(se) <- par_names
   cond <- if (pd) max_eig / min_eig else NA_real_
   list(vcov = vc, se = se,
        diag = list(min_eigenvalue = min_eig, max_eigenvalue = max_eig,
-                   condition = cond, ridge = ridge, inversion = if (inherits(vc, "try-error")) "pseudo_inv" else "solve",
+                   condition = cond, ridge = ridge, inversion = inv_method,
                    positive_definite = pd, repaired = !pd, label = label))
 }
 
