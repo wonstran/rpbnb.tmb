@@ -26,6 +26,16 @@ rhs <- ~ x_age + x_income + x_score + d_female + d_urban + d_married + d_college
 f1 <- update(rhs, y1 ~ .)
 f2 <- update(rhs, y2 ~ .)
 
+# Use a subset of rows for a quicker demo (TMB AD tape grows with n * draws).
+# Set use_subset = FALSE and draws = 500 for the full fit (expect several minutes).
+use_subset <- TRUE
+if (use_subset) {
+  set.seed(42)
+  idx <- sample(nrow(data), 1000L)
+  data <- data[idx, ]
+  cat("Using", nrow(data), "row subset for quicker demo.\n")
+}
+
 t_fit <- system.time(
   fit <- fit_rpbnb_tmb(
     formula_1 = f1,
@@ -34,7 +44,7 @@ t_fit <- system.time(
     random_1  = truth$random_names_1,   # c("x_age")
     random_2  = truth$random_names_2,   # c("x_income")
     dependence = "famoye",
-    draws     = 500,
+    draws     = 200,
     seed      = 20240712,
     control   = rpbnb_tmb_control(
       print_level = 2,

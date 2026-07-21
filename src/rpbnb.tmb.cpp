@@ -40,6 +40,7 @@ Type objective_function<Type>::operator() () {
   DATA_INTEGER(pois2);
   DATA_SCALAR(lamLo);
   DATA_SCALAR(lamHi);
+  DATA_INTEGER(n_cores);
 
   // ---- Parameters ----
   PARAMETER_VECTOR(beta1);
@@ -57,6 +58,9 @@ Type objective_function<Type>::operator() () {
   int q1 = rand_idx1.size();
   int q2 = rand_idx2.size();
   int R = (q1 + q2 > 0) ? Z1.rows() : 1;
+#ifdef _OPENMP
+  if (n_cores > 0) omp_set_num_threads(n_cores);
+#endif
 
   // ---- Natural-scale parameters ----
   Type m1 = exp(log_m1);
@@ -184,6 +188,9 @@ Type objective_function<Type>::operator() () {
   vector<Type> ll_draw(n);
   matrix<Type> ll_all(n, R);
 
+  // Parallelize per-draw loop over simulation draws (each draw writes its own
+  // column of ll_all — independent columns, no data race).
+  #pragma omp parallel for schedule(static)
   for (int r = 0; r < R; r++) {
     // Compute per-draw eta = xb + XR * dev
     vector<Type> eta1 = xb1;
