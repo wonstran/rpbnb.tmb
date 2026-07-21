@@ -107,10 +107,24 @@ print(compare_sd("2", truth$random_2), digits = 4)
 cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 cat("DISPERSION & DEPENDENCE: estimate vs true\n")
 cat(paste(rep("=", 72), collapse = ""), "\n")
+
+# Extract natural-scale lambda from sdreport (the ADREPORTed quantity, NOT the
+# internal unbounded z_dep parameter).  For independence models no lambda is
+# REPORTed; in that case display NA.
+sdr <- fit$sdreport
+lam_hat <- NA_real_
+if (!is.null(sdr)) {
+  sdr_report <- try(summary(sdr, "report"), silent = TRUE)
+  if (!inherits(sdr_report, "try-error") && "lam" %in% rownames(sdr_report)) {
+    lam_hat <- sdr_report["lam", "Estimate"]
+  }
+}
 disp_tbl <- data.frame(
   Parameter = c("m1", "m2", "lambda"),
   True      = c(truth$dispersion[["m1"]], truth$dispersion[["m2"]], truth$lambda),
-  Estimate  = c(fit$m1, fit$m2, coef(fit)["z_dep"]),
+  Estimate  = c(if (is.null(fit$m1)) NA_real_ else fit$m1,
+                if (is.null(fit$m2)) NA_real_ else fit$m2,
+                lam_hat),
   row.names = NULL
 )
 print(disp_tbl, digits = 4)
