@@ -52,8 +52,8 @@ Type objective_function<Type>::operator() () {
 
   // ---- Dimensions ----
   int n = Y1.size();
-  int k1 = X1.cols();
-  int k2 = X2.cols();
+  int k1 = X1.cols(); (void)k1;
+  int k2 = X2.cols(); (void)k2;
   int q1 = rand_idx1.size();
   int q2 = rand_idx2.size();
   int R = (q1 + q2 > 0) ? Z1.rows() : 1;
@@ -112,6 +112,54 @@ Type objective_function<Type>::operator() () {
       return s * (2.0 * base - 1.0);
     // triangular
     return s * base;
+  };
+
+  // ---- Bivariate normal CDF (for Gaussian copula) ----
+  auto bvncdf = [](Type h, Type k, Type r) -> Type {
+    // P(Z1 <= h, Z2 <= k) for standard bivariate normal with correlation r
+    // Uses Gauss-Legendre quadrature on the integral:
+    // Phi2(h,k;r) = int_0^{Phi(h)} Phi((k - r*Phi^{-1}(p))/sqrt(1-r^2)) dp
+    if (r == Type(0)) return pnorm(h) * pnorm(k);
+    if (!CppAD::isfinite(h)) return (h > Type(0)) ? pnorm(k) : Type(0);
+    if (!CppAD::isfinite(k)) return (k > Type(0)) ? pnorm(h) : Type(0);
+    if (r >= Type(1.0)) {
+      if (h < k) return pnorm(h); else return pnorm(k);
+    }
+    if (r <= Type(-1.0)) {
+      Type s = pnorm(h) + pnorm(k) - Type(1.0);
+      if (s < Type(0.0)) s = Type(0.0);
+      return s;
+    }
+    Type sig = sqrt(Type(1.0) - r * r);
+    if (sig < Type(1e-15)) sig = Type(1e-15);
+    // Choose shorter integration path: use min(Phi(h), Phi(k))
+    Type ph = pnorm(h);
+    Type pk = pnorm(k);
+    Type a, oth;
+    if (ph <= pk) { a = ph; oth = k; } else { a = pk; oth = h; }
+    if (a >= Type(1.0)) a = Type(1.0 - 1e-15);
+    if (a <= Type(0.0)) return Type(0);
+    // 20-point Gauss-Legendre quadrature on [0, a]
+    static const double x20[10] = {0.9931285991850949, 0.9639719272779138,
+      0.9122344282513259, 0.8391169718222188, 0.7463319064601508,
+      0.6360536807265150, 0.5108670019508271, 0.3737060887154196,
+      0.2277858511416451, 0.07652652113349733};
+    static const double w20[10] = {0.01761400713915212, 0.04060142980038694,
+      0.06267204833410906, 0.08327674157670475, 0.1019301198172404,
+      0.1181945319615184, 0.1316886384491766, 0.1420961093183821,
+      0.1491729864726037, 0.1527533871307259};
+    Type result = 0;
+    Type hw = a / Type(2.0);
+    Type mid = a / Type(2.0);
+    for (int i = 0; i < 10; i++) {
+      Type z1 = qnorm(mid + hw * x20[i]);
+      Type z2 = qnorm(mid - hw * x20[i]);
+      Type arg1 = (oth - r * z1) / sig;
+      Type arg2 = (oth - r * z2) / sig;
+      result += w20[i] * (pnorm(arg1) + pnorm(arg2));
+    }
+    result = result * hw;
+    return result;
   };
 
   // Famoye constant d = 1 - exp(-1) (loop-invariant)
@@ -215,6 +263,125 @@ Type objective_function<Type>::operator() () {
                           : dnbinom2(Y2(i), mu2(i), mu2(i) + m2 * mu2(i) * mu2(i), true);
         ll_draw(i) = lnb1 + lnb2;
       }
+    } else if (family == FAM_FRANK) {
+      // Frank copula: C(u,v;theta) = -1/theta * log(1 + (e^{-theta*u}-1)(e^{-theta*v}-1)/(e^{-theta}-1))
+      for (int i = 0; i < n; i++) {
+        // NB2 CDF corners
+        Type a1, a1m, b1, b1m;
+        Type r1i = r1, r2i = r2;
+        // Eq1 CDF
+        if (pois1) {
+          a1 = ppois(Y1(i), mu1(i));
+          a1m = (Y1(i) > Type(0)) ? ppois(Y1(i) - Type(1), mu1(i)) : Type(0);
+        } else {
+          Type p1 = r1i / (r1i + mu1(i));
+          a1 = pbeta(p1, r1i, Y1(i) + Type(1));
+          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1i, Y1(i)) : Type(0);
+        }
+        // Eq2 CDF
+        if (pois2) {
+          b1 = ppois(Y2(i), mu2(i));
+          b1m = (Y2(i) > Type(0)) ? ppois(Y2(i) - Type(1), mu2(i)) : Type(0);
+        } else {
+          Type p2 = r2i / (r2i + mu2(i));
+          b1 = pbeta(p2, r2i, Y2(i) + Type(1));
+          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2i, Y2(i)) : Type(0);
+        }
+        // Frank CDF lambda
+        auto frank_cdf = [](Type u, Type v, Type th) -> Type {
+          if (th > Type(-1e-10) && th < Type(1e-10)) return u * v;
+          Type et = exp(-th);
+          Type num = (exp(-th * u) - Type(1)) * (exp(-th * v) - Type(1));
+          Type denom = et - Type(1);
+          Type arg = Type(1) + num / denom;
+          if (arg < Type(1e-300)) arg = Type(1e-300);
+          return -log(arg) / th;
+        };
+        Type C_ab   = frank_cdf(a1,   b1,  theta);
+        Type C_amb  = frank_cdf(a1m,  b1,  theta);
+        Type C_abm  = frank_cdf(a1,   b1m, theta);
+        Type C_ambm = frank_cdf(a1m,  b1m, theta);
+        Type p_obs = C_ab - C_amb - C_abm + C_ambm;
+        if (p_obs < Type(1e-300)) p_obs = Type(1e-300);
+        ll_draw(i) = log(p_obs);
+      }
+    } else if (family == FAM_GAUSSIAN) {
+      // Gaussian copula: C(u,v;rho) = Phi_2(Phi^{-1}(u), Phi^{-1}(v); rho)
+      for (int i = 0; i < n; i++) {
+        // NB2 CDF corners
+        Type a1, a1m, b1, b1m;
+        Type r1i = r1, r2i = r2;
+        if (pois1) {
+          a1 = ppois(Y1(i), mu1(i));
+          a1m = (Y1(i) > Type(0)) ? ppois(Y1(i) - Type(1), mu1(i)) : Type(0);
+        } else {
+          Type p1 = r1i / (r1i + mu1(i));
+          a1 = pbeta(p1, r1i, Y1(i) + Type(1));
+          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1i, Y1(i)) : Type(0);
+        }
+        if (pois2) {
+          b1 = ppois(Y2(i), mu2(i));
+          b1m = (Y2(i) > Type(0)) ? ppois(Y2(i) - Type(1), mu2(i)) : Type(0);
+        } else {
+          Type p2 = r2i / (r2i + mu2(i));
+          b1 = pbeta(p2, r2i, Y2(i) + Type(1));
+          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2i, Y2(i)) : Type(0);
+        }
+        // qnorm of each corner, clamped for numerical stability
+        auto safe_qnorm = [](Type p) -> Type {
+          if (p < Type(1e-15)) p = Type(1e-15);
+          if (p > Type(1.0 - 1e-15)) p = Type(1.0 - 1e-15);
+          return qnorm(p);
+        };
+        Type qa  = safe_qnorm(a1);
+        Type qam = safe_qnorm(a1m);
+        Type qb  = safe_qnorm(b1);
+        Type qbm = safe_qnorm(b1m);
+        Type C_ab   = bvncdf(qa,   qb,  rho);
+        Type C_amb  = bvncdf(qam,  qb,  rho);
+        Type C_abm  = bvncdf(qa,   qbm, rho);
+        Type C_ambm = bvncdf(qam,  qbm, rho);
+        Type p_obs = C_ab - C_amb - C_abm + C_ambm;
+        if (p_obs < Type(1e-300)) p_obs = Type(1e-300);
+        ll_draw(i) = log(p_obs);
+      }
+    } else if (family == FAM_CLAYTON) {
+      // Clayton copula: C(u,v;th) = max(u^{-th} + v^{-th} - 1, 0)^{-1/th}
+      for (int i = 0; i < n; i++) {
+        // NB2 CDF corners
+        Type a1, a1m, b1, b1m;
+        Type r1i = r1, r2i = r2;
+        if (pois1) {
+          a1 = ppois(Y1(i), mu1(i));
+          a1m = (Y1(i) > Type(0)) ? ppois(Y1(i) - Type(1), mu1(i)) : Type(0);
+        } else {
+          Type p1 = r1i / (r1i + mu1(i));
+          a1 = pbeta(p1, r1i, Y1(i) + Type(1));
+          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1i, Y1(i)) : Type(0);
+        }
+        if (pois2) {
+          b1 = ppois(Y2(i), mu2(i));
+          b1m = (Y2(i) > Type(0)) ? ppois(Y2(i) - Type(1), mu2(i)) : Type(0);
+        } else {
+          Type p2 = r2i / (r2i + mu2(i));
+          b1 = pbeta(p2, r2i, Y2(i) + Type(1));
+          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2i, Y2(i)) : Type(0);
+        }
+        // Clayton CDF lambda
+        auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
+          if (th < Type(1e-10)) return u * v;
+          Type inner = pow(u, -th) + pow(v, -th) - Type(1);
+          if (inner < Type(0)) inner = Type(0);
+          return pow(inner, Type(-1.0) / th);
+        };
+        Type C_ab   = clayton_cdf(a1,   b1,  theta);
+        Type C_amb  = clayton_cdf(a1m,  b1,  theta);
+        Type C_abm  = clayton_cdf(a1,   b1m, theta);
+        Type C_ambm = clayton_cdf(a1m,  b1m, theta);
+        Type p_obs = C_ab - C_amb - C_abm + C_ambm;
+        if (p_obs < Type(1e-300)) p_obs = Type(1e-300);
+        ll_draw(i) = log(p_obs);
+      }
     }
 
     // Store per-draw LL
@@ -244,6 +411,45 @@ Type objective_function<Type>::operator() () {
     ADREPORT(rho);
   } else if (family == FAM_CLAYTON) {
     ADREPORT(theta);
+  }
+
+  // ---- Kendall's tau for copula families ----
+  if (family == FAM_FRANK || family == FAM_GAUSSIAN || family == FAM_CLAYTON) {
+    Type tau;
+    if (family == FAM_GAUSSIAN) {
+      tau = Type(2.0) / M_PI * asin(rho);
+    } else if (family == FAM_CLAYTON) {
+      tau = theta / (theta + Type(2.0));
+    } else {  // Frank
+      // Frank tau: 1 - 4/th * (1 - D1(th)) where D1 is Debye function order 1
+      if (fabs(theta) < Type(1e-10)) {
+        tau = Type(0);
+      } else {
+        // 20-point Gauss-Legendre quadrature on [0, theta]
+        static const double x20[10] = {0.9931285991850949, 0.9639719272779138,
+          0.9122344282513259, 0.8391169718222188, 0.7463319064601508,
+          0.6360536807265150, 0.5108670019508271, 0.3737060887154196,
+          0.2277858511416451, 0.07652652113349733};
+        static const double w20[10] = {0.01761400713915212, 0.04060142980038694,
+          0.06267204833410906, 0.08327674157670475, 0.1019301198172404,
+          0.1181945319615184, 0.1316886384491766, 0.1420961093183821,
+          0.1491729864726037, 0.1527533871307259};
+        Type D1 = 0;
+        for (int qq = 0; qq < 10; qq++) {
+          Type t = theta * Type(0.5) * (Type(1.0) + Type(x20[qq]));
+          Type f = t / (exp(t) - Type(1.0));
+          if (!CppAD::isfinite(f)) f = Type(0);
+          D1 += Type(w20[qq]) * f;
+          t = theta * Type(0.5) * (Type(1.0) - Type(x20[qq]));
+          f = t / (exp(t) - Type(1.0));
+          if (!CppAD::isfinite(f)) f = Type(0);
+          D1 += Type(w20[qq]) * f;
+        }
+        D1 = D1 * Type(0.5);
+        tau = Type(1.0) - Type(4.0) / theta * (Type(1.0) - D1);
+      }
+    }
+    ADREPORT(tau);
   }
 
   return nll;
