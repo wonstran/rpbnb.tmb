@@ -11,3 +11,9 @@ NULL
 #' @importFrom stats nlminb coef vcov logLik AIC BIC predict
 #' @importFrom TMB MakeADFun sdreport
 NULL
+
+# On-load hook: load the TMB DLL (package name has a dot, so useDynLib
+# would look for the wrong R_init_ symbol — load via library.dynam instead).
+.onLoad <- function(libname, pkgname) {
+  library.dynam("rpbnb.tmb", pkgname, libname)
+}
