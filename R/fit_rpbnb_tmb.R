@@ -1,0 +1,238 @@
+#' Fit a bivariate random-parameter negative binomial model (TMB)
+#'
+#' Maximum simulated likelihood via TMB (Template Model Builder) with
+#' automatic differentiation. Supports Famoye/Sarmanov and discrete-copula
+#' (Frank, Gaussian, Clayton) dependence.
+#'
+#' @param formula_1,formula_2 Model formulas for the two count outcomes.
+#' @param data A data frame.
+#' @param random_1,random_2 Random coefficient specs per equation. NULL (all
+#'   fixed), character vector (all Normal), or named list with per-variable
+#'   distribution specs (\code{"normal"}, \code{"lognormal"}, \code{"uniform"},
+#'   \code{"triangular"}).
+#' @param draws Number of Halton simulation draws.
+#' @param seed Random seed for draws.
+#' @param start Optional starting parameter vector (named or positional).
+#' @param dependence Dependence structure: "famoye", "independence", or a
+#'   \code{copula()} object for copula dependence.
+#' @param control An object from \code{rpbnb_tmb_control()}.
+#' @param poisson_1,poisson_2 Fit the corresponding margin at its exact Poisson
+#'   limit (NB2 dispersion m = 0, held fixed).
+#' @return An object of class \code{rpbnb_tmb_fit}.
+#' @export
+#' @examples
+#' sim <- simulate_rpbnb_tmb(n = 300,
+#'   beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
+#'   beta2 = c("(Intercept)" = 0.1, x1 = -0.3),
+#'   dispersion = c(m1 = 0.4, m2 = 0.5), seed = 1)
+#' fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = sim$data, draws = 100)
+#' coef(fit)
+fit_rpbnb_tmb <- function(formula_1, formula_2, data,
+                          random_1 = NULL, random_2 = NULL,
+                          draws = 400L, seed = 1234L, start = NULL,
+                          dependence = "famoye",
+                          control = rpbnb_tmb_control(),
+                          poisson_1 = FALSE, poisson_2 = FALSE) {
+  stopifnot(is.data.frame(data))
+  .chk_poisson_flag(poisson_1, "poisson_1")
+  .chk_poisson_flag(poisson_2, "poisson_2")
+
+  # Resolve dependence
+  if (inherits(dependence, "rpbnb_copula")) {
+    if (isTRUE(poisson_1) || isTRUE(poisson_2)) {
+      stop("Poisson-limit margins not supported with copula dependence.")
+    }
+    family_code <- switch(dependence$family,
+      frank = 1L, normal = 2L, kimeldorf = 3L)
+  } else if (identical(dependence, "famoye")) {
+    family_code <- 0L
+  } else if (identical(dependence, "independence")) {
+    family_code <- -1L
+  } else {
+    stop("`dependence` must be \"famoye\", \"independence\", or copula().")
+  }
+
+  # Prepare data
+  prep <- .prepare_bnb_data(formula_1, formula_2, data)
+  Y1 <- prep$Y1; Y2 <- prep$Y2
+  X1 <- prep$X1; X2 <- prep$X2
+  n <- prep$n
+
+  # Parse random specs
+  spec1 <- parse_rand_spec(random_1)
+  spec2 <- parse_rand_spec(random_2)
+  rand_idx1 <- match(spec1$names, colnames(X1))
+  rand_idx2 <- match(spec2$names, colnames(X2))
+  if (any(is.na(rand_idx1))) stop("Random names not found in formula_1.")
+  if (any(is.na(rand_idx2))) stop("Random names not found in formula_2.")
+  dist1 <- match(spec1$dist, c("normal", "lognormal", "uniform", "triangular")) - 1L
+  dist2 <- match(spec2$dist, c("normal", "lognormal", "uniform", "triangular")) - 1L
+  sign1 <- as.integer(spec1$sign)
+  sign2 <- as.integer(spec2$sign)
+  q1 <- length(rand_idx1); q2 <- length(rand_idx2)
+  k1 <- ncol(X1); k2 <- ncol(X2)
+  total_rand <- q1 + q2
+
+  # Generate Halton draws
+  set.seed(seed)
+  if (total_rand > 0) {
+    Z <- halton_uniform(draws, total_rand, burn = control$halton_burn)
+    Z1 <- if (q1 > 0) Z[, 1:q1, drop = FALSE] else matrix(0, draws, 0)
+    Z2 <- if (q2 > 0) Z[, (q1 + 1):total_rand, drop = FALSE] else matrix(0, draws, 0)
+  } else {
+    Z1 <- matrix(0, 1, 0); Z2 <- matrix(0, 1, 0)
+  }
+
+  # Parameter names
+  scale_lab <- function(dist, cols) {
+    vapply(seq_along(dist), function(j) {
+      paste0(c("log_sd", "log_s", "log_w", "log_w")[dist[j] + 1L], cols[j])
+    }, character(1))
+  }
+  par_names <- c(paste0("b1:", colnames(X1)), paste0("b2:", colnames(X2)),
+                 if (q1 > 0) scale_lab(dist1, paste0("1:", colnames(X1)[rand_idx1])),
+                 if (q2 > 0) scale_lab(dist2, paste0("2:", colnames(X2)[rand_idx2])),
+                 "log_m1", "log_m2",
+                 if (family_code >= 0L) "z_dep" else NULL)
+  npar <- length(par_names)
+
+  # Default start values
+  default_start <- c(rep(0, k1 + k2),
+                     if (q1 > 0) rep(log(0.2), q1),
+                     if (q2 > 0) rep(log(0.2), q2),
+                     log(0.5), log(0.5),
+                     if (family_code >= 0L) 0 else NULL)
+  start <- .resolve_start(start, default_start, par_names)
+  names(start) <- par_names
+
+  # Poisson margins: pin log_m at log(POISSON_M)
+  fixed_names <- c(if (isTRUE(poisson_1)) "log_m1",
+                   if (isTRUE(poisson_2)) "log_m2")
+  if (length(fixed_names)) {
+    start[fixed_names] <- log(POISSON_M)
+  }
+
+  # Famoye: compute frozen lambda bounds at start
+  lamLo <- 0; lamHi <- 0
+  if (family_code == 0L) {
+    # Extract beta/sd/dispersion from start
+    i1 <- 1:k1; i2 <- (k1 + 1):(k1 + k2)
+    s1 <- if (q1 > 0) exp(start[(k1 + k2 + 1):(k1 + k2 + q1)]) else numeric(0)
+    s2 <- if (q2 > 0) exp(start[(k1 + k2 + q1 + 1):(k1 + k2 + q1 + q2)]) else numeric(0)
+    idx_end <- k1 + k2 + q1 + q2
+    m1_start <- if (poisson_1) 0 else exp(start[idx_end + 1])
+    m2_start <- if (poisson_2) 0 else exp(start[idx_end + 2])
+    xb1 <- as.vector(X1 %*% start[i1]); xb2 <- as.vector(X2 %*% start[i2])
+    Rloc <- if (total_rand > 0) draws else 1L
+    lamLo <- -Inf; lamHi <- Inf
+    for (r in seq_len(Rloc)) {
+      eta1 <- if (q1 > 0) xb1 + as.vector(X1[, rand_idx1, drop = FALSE] %*% (s1 * (if (dist1[1] == 0L) qnorm(Z1[r, ]) else Z1[r, ]))) else xb1
+      eta2 <- if (q2 > 0) xb2 + as.vector(X2[, rand_idx2, drop = FALSE] %*% (s2 * (if (dist2[1] == 0L) qnorm(Z2[r, ]) else Z2[r, ]))) else xb2
+      mu1_r <- pmin(pmax(exp(eta1), 1e-300), 1e15)
+      mu2_r <- pmin(pmax(exp(eta2), 1e-300), 1e15)
+      b <- lambda_bounds_vec(c_val(mu1_r, m1_start), c_val(mu2_r, m2_start))
+      lamLo <- max(lamLo, b[1]); lamHi <- min(lamHi, b[2])
+    }
+    if (!(lamLo < lamHi)) {
+      stop("Invalid lambda bounds at starting values.")
+    }
+  }
+
+  # Build TMB object
+  tmb_data <- .build_tmb_data(Y1, Y2, X1, X2, rand_idx1, rand_idx2,
+                              Z1, Z2, dist1, dist2, sign1, sign2,
+                              family_code, poisson_1, poisson_2,
+                              lamLo, lamHi)
+  # Map fixed parameters (e.g., pinned log_m for Poisson margins)
+  map <- list()
+  if (length(fixed_names)) {
+    for (fn in fixed_names) {
+      map[[fn]] <- factor(NA)  # fix to starting value
+    }
+  }
+  # Independence: z_dep is in the C++ template but not estimated
+  if (family_code < 0L) {
+    map[["z_dep"]] <- factor(NA)
+  }
+
+  i1 <- 1:k1; i2 <- (k1 + 1):(k1 + k2)
+  idx_end <- k1 + k2 + q1 + q2
+
+  obj <- TMB::MakeADFun(
+    data = tmb_data,
+    parameters = list(
+      beta1 = start[i1],
+      beta2 = start[i2],
+      log_sd1 = if (q1 > 0) start[(k1 + k2 + 1):(k1 + k2 + q1)] else numeric(0),
+      log_sd2 = if (q2 > 0) start[(k1 + k2 + q1 + 1):(k1 + k2 + q1 + q2)] else numeric(0),
+      log_m1 = start[idx_end + 1],
+      log_m2 = start[idx_end + 2],
+      z_dep = if (family_code >= 0L) start[idx_end + 3] else 0
+    ),
+    map = if (length(map) > 0) map else NULL,
+    DLL = "rpbnb.tmb",
+    silent = control$print_level == 0L
+  )
+
+  # Optimize with nlminb
+  opt <- stats::nlminb(
+    start = obj$par,
+    objective = obj$fn,
+    gradient = obj$gr,
+    control = list(
+      iter.max = control$iterlim,
+      eval.max = control$iterlim * 2,
+      rel.tol = control$reltol,
+      trace = max(0, control$print_level - 1)
+    )
+  )
+
+  # Extract results
+  par_hat <- obj$env$last.par.best
+  # Map back to full named vector
+  # The TMB parameter vector is obj$par with random effects appended
+  # obj$env$last.par.best contains the full vector
+  full_par <- obj$env$last.par.best[obj$env$par]
+  # Build named coefficient vector matching par_names
+  coef_vec <- obj$env$last.par.best[seq_along(par_names)]
+  names(coef_vec) <- par_names
+
+  # sdreport
+  sdr <- TMB::sdreport(obj)
+  se_vec <- as.list(sdr, "Std. Error")
+  # Build full named coef vector matching par_names
+
+  # Construct result
+  value <- opt$objective
+  ll_hat <- -value  # nll -> logLik
+
+  # Extract natural-scale parameters
+  rep <- sdr$value
+  # m1 = exp(log_m1) etc. via ADREPORT
+  m1_hat <- as.numeric(rep["m1"])
+  m2_hat <- as.numeric(rep["m2"])
+
+  # Build vcov matrix
+  vc <- try(vcov(sdr), silent = TRUE)
+  if (inherits(vc, "try-error")) {
+    vc <- matrix(NA_real_, npar, npar)
+  }
+
+  result <- list(
+    coef = coef_vec,
+    vcov = vc,
+    se = se_vec,
+    logLik = ll_hat,
+    nobs = n,
+    npar = npar,
+    m1 = m1_hat,
+    m2 = m2_hat,
+    dependence = dependence,
+    optimizer = opt,
+    sdreport = sdr,
+    obj = obj,
+    call = match.call()
+  )
+  class(result) <- "rpbnb_tmb_fit"
+  result
+}
