@@ -63,24 +63,26 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
     cat("\n")
   }
 
-  # ---- Random-coefficient scales (log_sd1/log_s1/log_w1:*) ----
+  # ---- Random-coefficient scales (displayed as sd1/sd2) ----
   s1 <- grep("^(log_sd1|log_s1|log_w1):", nm)
   if (length(s1)) {
     cat("--- Random-coefficient SDs (equation 1) ---\n")
     tbl_s1 <- cbind(Estimate_log = object$coef[s1],
                     Estimate = exp(object$coef[s1]),
                     `Std. Error` = object$se[s1])
+    rownames(tbl_s1) <- gsub("^log_sd1:|^log_s1:|^log_w1:", "sd1:", nm[s1])
     print(tbl_s1)
     cat("\n")
   }
 
-  # ---- Random-coefficient scales (log_sd2/log_s2/log_w2:*) ----
+  # ---- Random-coefficient scales (displayed as sd1/sd2) ----
   s2 <- grep("^(log_sd2|log_s2|log_w2):", nm)
   if (length(s2)) {
     cat("--- Random-coefficient SDs (equation 2) ---\n")
     tbl_s2 <- cbind(Estimate_log = object$coef[s2],
                     Estimate = exp(object$coef[s2]),
                     `Std. Error` = object$se[s2])
+    rownames(tbl_s2) <- gsub("^log_sd2:|^log_s2:|^log_w2:", "sd2:", nm[s2])
     print(tbl_s2)
     cat("\n")
   }
