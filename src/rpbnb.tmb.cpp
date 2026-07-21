@@ -114,10 +114,8 @@ Type objective_function<Type>::operator() () {
     return s * base;
   };
 
-  // LL matrix: n x R, per-draw per-obs log-likelihood
-  // Use parallel_accumulator for OpenMP
-  parallel_accumulator<Type> nll_accum(this);
-  nll_accum = 0;
+  // Famoye constant d = 1 - exp(-1) (loop-invariant)
+  Type famoye_d = Type(1.0) - exp(Type(-1.0));
 
   // Pre-compute exp(-y) for Famoye path
   vector<Type> ey1(n), ey2(n);
@@ -191,17 +189,16 @@ Type objective_function<Type>::operator() () {
         }
 
         // c_val = (1 + d * m * mu)^(-1/m) or exp(-d * mu) for Poisson
-        Type d = Type(1.0) - exp(Type(-1.0));
         Type c1, c2;
         if (pois1) {
-          c1 = exp(-d * mu1(i));
+          c1 = exp(-famoye_d * mu1(i));
         } else {
-          c1 = pow(Type(1.0) + d * m1 * mu1(i), Type(-1.0) / m1);
+          c1 = pow(Type(1.0) + famoye_d * m1 * mu1(i), Type(-1.0) / m1);
         }
         if (pois2) {
-          c2 = exp(-d * mu2(i));
+          c2 = exp(-famoye_d * mu2(i));
         } else {
-          c2 = pow(Type(1.0) + d * m2 * mu2(i), Type(-2.0) / m2);
+          c2 = pow(Type(1.0) + famoye_d * m2 * mu2(i), Type(-1.0) / m2);
         }
 
         Type dep = Type(1.0) + lam * (ey1(i) - c1) * (ey2(i) - c2);
