@@ -37,6 +37,11 @@ print.rpbnb_tmb_fit <- function(x, ...) {
          symbols = c("***", "**", "*", ".", " "))
 }
 
+# Print a coefficient table: 4 digits, no quotes around column names
+.print_tbl <- function(x) {
+  print(noquote(format(round(x, 4))), print.gap = 2)
+}
+
 #' @export
 summary.rpbnb_tmb_fit <- function(object, ...) {
   cat("Summary: rpbnb_tmb fit\n")
@@ -56,7 +61,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                   `z value` = object$coef[eq1] / object$se[eq1],
                   `Pr(>|z|)` = p1,
                   Signif = .signif_stars(p1))
-    print(tbl1)
+    .print_tbl(tbl1)
     cat("\n")
   }
 
@@ -70,7 +75,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                   `z value` = object$coef[eq2] / object$se[eq2],
                   `Pr(>|z|)` = p2,
                   Signif = .signif_stars(p2))
-    print(tbl2)
+    .print_tbl(tbl2)
     cat("\n")
   }
 
@@ -85,7 +90,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                     `Pr(>|z|)` = p_s1,
                     Signif = .signif_stars(p_s1))
     rownames(tbl_s1) <- gsub("^log_sd1:|^log_s1:|^log_w1:", "sd1:", nm[s1])
-    print(tbl_s1)
+    .print_tbl(tbl_s1)
     cat("\n")
   }
 
@@ -100,7 +105,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                     `Pr(>|z|)` = p_s2,
                     Signif = .signif_stars(p_s2))
     rownames(tbl_s2) <- gsub("^log_sd2:|^log_s2:|^log_w2:", "sd2:", nm[s2])
-    print(tbl_s2)
+    .print_tbl(tbl_s2)
     cat("\n")
   }
 
@@ -111,7 +116,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
     Estimate  = c(object$m1, object$m2),
     row.names = NULL
   )
-  print(disp, digits = 4)
+  .print_tbl(disp)
   cat("\n")
 
   # ---- Dependence parameter (from sdreport) ----
