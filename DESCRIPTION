@@ -1,0 +1,25 @@
+Package: rpbnb.tmb
+Type: Package
+Title: Random-Parameter Bivariate Negative Binomial Regression (TMB)
+Version: 0.1.0
+Authors@R: person("Zhenyu", "Wang", email = "wonstran@hotmail.com", role = c("aut", "cre"))
+Author: Zhenyu Wang [aut, cre]
+Maintainer: Zhenyu Wang <wonstran@hotmail.com>
+Description: Maximum-simulated-likelihood estimation of a bivariate
+    random-parameter negative binomial model with Famoye/Sarmanov or
+    discrete-copula (Frank, Gaussian, or Clayton) dependence, using
+    Template Model Builder (TMB) for automatic differentiation.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends: R (>= 4.1)
+Imports:
+    stats,
+    TMB
+LinkingTo: TMB
+Suggests:
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 8.0.0

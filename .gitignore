@@ -1,0 +1,16 @@
+# R build artifacts
+*.tar.gz
+*.Rcheck/
+src/*.o
+src/*.so
+src/*.dll
+src/*.dylib
+src/symbols.rds
+
+# R
+.Rhistory
+.RData
+.Ruserdata
+
+# TMB artifacts
+src/*.o
