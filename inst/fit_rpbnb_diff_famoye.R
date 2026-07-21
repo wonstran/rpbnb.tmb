@@ -23,6 +23,8 @@ sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- 1. Data ----------------------------------------------------------------
 data <- read.csv(file.path("data", "rwm1984_bnb.csv"))
+# Use first 2000 observations for a quicker demo
+data <- data[1:2000, ]
 cat("=== RP-BNB (different formulas, Famoye) on rwm1984 health counts ===\n")
 cat("Observations :", nrow(data), "\n")
 
