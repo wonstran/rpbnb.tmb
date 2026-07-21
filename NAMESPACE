@@ -1,4 +1,5 @@
 export(fit_rpbnb_tmb)
+export(simulate_rpbnb_tmb)
 export(rpbnb_tmb_control)
 export(copula)
 importFrom(stats, nlminb)

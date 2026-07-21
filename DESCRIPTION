@@ -19,7 +19,8 @@ LinkingTo: TMB
 Suggests:
     testthat (>= 3.0.0),
     knitr,
-    rmarkdown
+    rmarkdown,
+    pbivnorm
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 8.0.0
