@@ -74,3 +74,11 @@ if (!is.null(sdr)) {
   sdr_sum <- summary(sdr, "report")
   print(sdr_sum)
 }
+
+# ---- 6. Marginal effects (AME) -----------------------------------------------
+sep(); cat("AVERAGE MARGINAL EFFECTS (AME)\n"); sep()
+rpbnb_tmb_marginal_effects(fit, which = "both")
+
+# ---- 7. Elasticities / semi-elasticities (AME) --------------------------------
+sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
+rpbnb_tmb_elasticities(fit, which = "both")
