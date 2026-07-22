@@ -211,14 +211,14 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   m1_hat <- as.numeric(rep["m1"])
   m2_hat <- as.numeric(rep["m2"])
 
-  # Build full vcov matrix matching par_names. TMB's sdreport returns covariance
-  # for free parameters only; scatter into the full npar x npar matrix.
+  # Build full vcov matrix matching par_names. Use cov.fixed from the sdreport
+  # directly (vcov.sdreport() can fail on some TMB builds; cov.fixed is the raw
+  # free-parameter covariance matrix).
   vc <- matrix(NA_real_, npar, npar, dimnames = list(par_names, par_names))
-  vc_free <- try(vcov(sdr), silent = TRUE)
-  if (!inherits(vc_free, "try-error") && length(vc_free) > 1) {
-    n_free <- ncol(vc_free)
+  if (!is.null(sdr$cov.fixed)) {
+    n_free <- ncol(sdr$cov.fixed)
     if (n_free <= npar) {
-      vc[seq_len(n_free), seq_len(n_free)] <- vc_free
+      vc[seq_len(n_free), seq_len(n_free)] <- sdr$cov.fixed
     }
   }
 
