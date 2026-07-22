@@ -203,7 +203,7 @@ rpbnb_tmb_elasticities <- function(fit,
   }
 
   se <- rep(NA_real_, length(res))
-  if (all(is.finite(V))) {
+  if (all(is.finite(V)) && nrow(V) == length(theta_hat)) {
     G <- numDeriv::jacobian(.estimand_t, theta_hat,
                             fit = fit, eq = eq, sel = sel, cn = cn,
                             is_bin = is_bin, quantity = quantity,

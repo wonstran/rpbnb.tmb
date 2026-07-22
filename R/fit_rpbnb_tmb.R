@@ -216,6 +216,8 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   if (inherits(vc, "try-error")) {
     vc <- matrix(NA_real_, npar, npar)
   }
+  # Ensure vcov has dimnames matching the coefficient names
+  dimnames(vc) <- list(par_names, par_names)
 
   rp_meta <- list(
     Z1 = Z1, Z2 = Z2,
