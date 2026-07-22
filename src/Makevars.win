@@ -1,0 +1,3 @@
+CXX_STD = CXX17
+PKG_CXXFLAGS = $(TMB_CXXFLAGS) -Wa,-mbig-obj $(shell $(R_HOME)/bin$(R_ARCH_BIN)/Rscript -e "cat(paste0('-I', system.file('include', package='RcppEigen')))")
+PKG_LIBS = $(TMB_LIBS)

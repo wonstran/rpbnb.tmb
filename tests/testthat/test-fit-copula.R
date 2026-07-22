@@ -1,3 +1,25 @@
+test_that("Frank random-parameter fit has finite curvature from default start", {
+  data_path <- testthat::test_path("..", "..", "data", "rwm1984_bnb.csv")
+  d <- utils::read.csv(data_path)[1:120, ]
+
+  fit <- expect_no_warning(fit_rpbnb_tmb(
+    docvis ~ age + hhninc + educ + female + married + kids,
+    hospvis ~ age + educ + outwork + female + self,
+    data = d,
+    random_1 = "hhninc",
+    random_2 = "educ",
+    dependence = copula("frank"),
+    draws = 20,
+    seed = 20240712,
+    control = rpbnb_tmb_control(iterlim = 100, n_cores = 1)
+  ))
+
+  expect_equal(fit$optimizer$convergence, 0)
+  expect_true(isTRUE(fit$sdreport$pdHess))
+  expect_true(all(is.finite(fit$se)))
+  expect_gt(abs(unname(coef(fit)["z_dep"])), 1e-6)
+})
+
 test_that("Frank copula fit converges", {
   skip_on_cran()
   set.seed(1)

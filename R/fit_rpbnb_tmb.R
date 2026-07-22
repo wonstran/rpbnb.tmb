@@ -103,7 +103,12 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
                      if (q1 > 0) rep(log(0.2), q1),
                      if (q2 > 0) rep(log(0.2), q2),
                      log(0.5), log(0.5),
-                     if (family_code >= 0L) 0 else NULL)
+                     if (family_code >= 0L) {
+                       # Starting Frank exactly at independence causes its
+                       # removable singularity to erase the dependence score
+                       # from the recorded AD tape.
+                       if (family_code == 1L) 0.1 else 0
+                     } else NULL)
   start <- .resolve_start(start, default_start, par_names)
   names(start) <- par_names
 

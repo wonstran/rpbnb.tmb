@@ -41,6 +41,7 @@ Type objective_function<Type>::operator() () {
   DATA_SCALAR(lamLo);
   DATA_SCALAR(lamHi);
   DATA_INTEGER(n_cores);
+  (void)n_cores;
 
   // ---- Parameters ----
   PARAMETER_VECTOR(beta1);
@@ -63,12 +64,19 @@ Type objective_function<Type>::operator() () {
 #endif
 
   // ---- Natural-scale parameters ----
-  Type m1 = exp(log_m1);
-  Type m2 = exp(log_m2);
+  auto clamp_ad = [](Type x, Type lo, Type hi) -> Type {
+    x = CppAD::CondExpLt(x, lo, lo, x);
+    return CppAD::CondExpGt(x, hi, hi, x);
+  };
+  Type m1 = exp(clamp_ad(log_m1, Type(-20.0), Type(20.0)));
+  Type m2 = exp(clamp_ad(log_m2, Type(-20.0), Type(20.0)));
   Type r1 = 1.0 / m1;
   Type r2 = 1.0 / m2;
-  vector<Type> sd1 = exp(log_sd1);
-  vector<Type> sd2 = exp(log_sd2);
+  vector<Type> sd1(log_sd1.size()), sd2(log_sd2.size());
+  for (int j = 0; j < log_sd1.size(); j++)
+    sd1(j) = exp(clamp_ad(log_sd1(j), Type(-20.0), Type(20.0)));
+  for (int j = 0; j < log_sd2.size(); j++)
+    sd2(j) = exp(clamp_ad(log_sd2(j), Type(-20.0), Type(20.0)));
 
   // Linear predictors (fixed part)
   vector<Type> xb1 = X1 * beta1;
@@ -81,11 +89,15 @@ Type objective_function<Type>::operator() () {
     Type sig = invlogit(z_dep);  // logistic(0,1) = 1/(1+exp(-x))
     lam = lamLo + (lamHi - lamLo) * (eps + (1.0 - 2.0 * eps) * sig);
   } else if (family == FAM_FRANK) {
-    theta = z_dep;
+    // Keep the Frank formula finite at the independence point.  The default
+    // start is deliberately non-zero so the AD tape retains dependence
+    // derivatives; this guard only protects later evaluations near zero.
+    Type signed_eps = CppAD::CondExpGe(z_dep, Type(0.0), Type(1e-8), Type(-1e-8));
+    theta = CppAD::CondExpLt(fabs(z_dep), Type(1e-8), signed_eps, z_dep);
   } else if (family == FAM_GAUSSIAN) {
     rho = tanh(z_dep);
   } else if (family == FAM_CLAYTON) {
-    theta = exp(z_dep);
+    theta = exp(clamp_ad(z_dep, Type(-20.0), Type(20.0)));
   }
 
   // ---- Random coefficient transforms (per draw) ----
@@ -123,32 +135,22 @@ Type objective_function<Type>::operator() () {
     // P(Z1 <= h, Z2 <= k) for standard bivariate normal with correlation r
     // Uses Gauss-Legendre quadrature on the integral:
     // Phi2(h,k;r) = int_0^{Phi(h)} Phi((k - r*Phi^{-1}(p))/sqrt(1-r^2)) dp
-    if (r == Type(0)) return pnorm(h) * pnorm(k);
-    if (!CppAD::isfinite(h)) return (h > Type(0)) ? pnorm(k) : Type(0);
-    if (!CppAD::isfinite(k)) return (k > Type(0)) ? pnorm(h) : Type(0);
-    if (r >= Type(1.0)) {
-      if (h < k) return pnorm(h); else return pnorm(k);
-    }
-    if (r <= Type(-1.0)) {
-      Type s = pnorm(h) + pnorm(k) - Type(1.0);
-      if (s < Type(0.0)) s = Type(0.0);
-      return s;
-    }
-    // Clamp correlation away from +/-1 and clamp sig to prevent division by zero
-    Type sig = sqrt(Type(1.0) - r * r);
-    if (sig < Type(1e-6)) sig = Type(1e-6);
-    if (sig > Type(1.0)) sig = Type(1.0);
-    // Clamp oth to prevent extreme qnorm arguments
-    if (oth > Type(10.0)) oth = Type(10.0);
-    if (oth < Type(-10.0)) oth = Type(-10.0);
+    // rho=tanh(z_dep) is strictly inside (-1,1).  Conditional expressions are
+    // required here: ordinary if-statements are frozen when CppAD records the
+    // tape and therefore do not protect later optimizer evaluations.
+    Type sig2 = Type(1.0) - r * r;
+    sig2 = CppAD::CondExpLt(sig2, Type(1e-12), Type(1e-12), sig2);
+    Type sig = sqrt(sig2);
     // Choose shorter integration path: use min(Phi(h), Phi(k))
     Type ph = pnorm(h);
     Type pk = pnorm(k);
-    Type a, oth;
-    if (ph <= pk) { a = ph; oth = k; } else { a = pk; oth = h; }
-    if (a >= Type(1.0)) a = Type(1.0 - 1e-10);
-    if (a <= Type(0.0)) a = Type(1e-10);
-    if (a <= Type(1e-10)) a = Type(1e-10);
+    Type a = CppAD::CondExpLe(ph, pk, ph, pk);
+    Type oth = CppAD::CondExpLe(ph, pk, k, h);
+    // Clamp a and oth to prevent extreme qnorm arguments
+    oth = CppAD::CondExpGt(oth, Type(10.0), Type(10.0), oth);
+    oth = CppAD::CondExpLt(oth, Type(-10.0), Type(-10.0), oth);
+    a = CppAD::CondExpGe(a, Type(1.0), Type(1.0 - 1e-10), a);
+    a = CppAD::CondExpLe(a, Type(1e-10), Type(1e-10), a);
     // 20-point Gauss-Legendre quadrature on [0, a]
     static const double x20[10] = {0.9931285991850949, 0.9639719272779138,
       0.9122344282513259, 0.8391169718222188, 0.7463319064601508,
@@ -191,13 +193,13 @@ Type objective_function<Type>::operator() () {
   // For random coefficients: average over draws
 
   // Storage for log-lik per draw per obs
-  vector<Type> ll_draw(n);
   matrix<Type> ll_all(n, R);
 
-  // Parallelize per-draw loop over simulation draws (each draw writes its own
-  // column of ll_all — independent columns, no data race).
-  #pragma omp parallel for schedule(static)
+  // TMB's AD tape cannot safely be recorded by this raw OpenMP loop.  Keep the
+  // draw loop deterministic; parallelization requires TMB's dedicated
+  // parallel_accumulator machinery rather than a shared AD tape.
   for (int r = 0; r < R; r++) {
+    vector<Type> ll_draw(n);
     // Compute per-draw eta = xb + XR * dev
     vector<Type> eta1 = xb1;
     vector<Type> eta2 = xb2;
@@ -223,12 +225,8 @@ Type objective_function<Type>::operator() () {
     // Per-draw means
     vector<Type> mu1(n), mu2(n);
     for (int i = 0; i < n; i++) {
-      mu1(i) = exp(eta1(i));
-      if (mu1(i) > Type(1e15)) mu1(i) = Type(1e15);
-      if (mu1(i) < Type(1e-300)) mu1(i) = Type(1e-300);
-      mu2(i) = exp(eta2(i));
-      if (mu2(i) > Type(1e15)) mu2(i) = Type(1e15);
-      if (mu2(i) < Type(1e-300)) mu2(i) = Type(1e-300);
+      mu1(i) = exp(clamp_ad(eta1(i), Type(-690.0), Type(34.538776394910684)));
+      mu2(i) = exp(clamp_ad(eta2(i), Type(-690.0), Type(34.538776394910684)));
     }
 
     // Per-observation log-likelihood for this draw
@@ -263,7 +261,7 @@ Type objective_function<Type>::operator() () {
         }
 
         Type dep = Type(1.0) + lam * (ey1(i) - c1) * (ey2(i) - c2);
-        if (dep < Type(1e-300)) dep = Type(1e-300);
+        dep = CppAD::CondExpLt(dep, Type(1e-300), Type(1e-300), dep);
 
         ll_draw(i) = lnb1 + lnb2 + log(dep);
       }
@@ -302,20 +300,19 @@ Type objective_function<Type>::operator() () {
         }
         // Frank CDF lambda
         auto frank_cdf = [](Type u, Type v, Type th) -> Type {
-          if (th > Type(-1e-10) && th < Type(1e-10)) return u * v;
-          Type et = exp(-th);
-          Type num = (exp(-th * u) - Type(1)) * (exp(-th * v) - Type(1));
-          Type denom = et - Type(1);
-          Type arg = Type(1) + num / denom;
-          if (arg < Type(1e-300)) arg = Type(1e-300);
-          return -log(arg) / th;
+          Type ratio = (exp(-th * u) - Type(1.0)) *
+                       (exp(-th * v) - Type(1.0)) /
+                       (exp(-th) - Type(1.0));
+          ratio = CppAD::CondExpLt(ratio, Type(-1.0 + 1e-15),
+                                   Type(-1.0 + 1e-15), ratio);
+          return -log(Type(1.0) + ratio) / th;
         };
         Type C_ab   = frank_cdf(a1,   b1,  theta);
         Type C_amb  = frank_cdf(a1m,  b1,  theta);
         Type C_abm  = frank_cdf(a1,   b1m, theta);
         Type C_ambm = frank_cdf(a1m,  b1m, theta);
         Type p_obs = C_ab - C_amb - C_abm + C_ambm;
-        if (p_obs < Type(1e-300)) p_obs = Type(1e-300);
+        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300), Type(1e-300), p_obs);
         ll_draw(i) = log(p_obs);
       }
     } else if (family == FAM_GAUSSIAN) {
@@ -342,8 +339,8 @@ Type objective_function<Type>::operator() () {
         }
         // qnorm of each corner, clamped for numerical stability
         auto safe_qnorm = [](Type p) -> Type {
-          if (p < Type(1e-15)) p = Type(1e-15);
-          if (p > Type(1.0 - 1e-15)) p = Type(1.0 - 1e-15);
+          p = CppAD::CondExpLt(p, Type(1e-15), Type(1e-15), p);
+          p = CppAD::CondExpGt(p, Type(1.0 - 1e-15), Type(1.0 - 1e-15), p);
           return qnorm(p);
         };
         Type qa  = safe_qnorm(a1);
@@ -355,7 +352,7 @@ Type objective_function<Type>::operator() () {
         Type C_abm  = bvncdf(qa,   qbm, rho);
         Type C_ambm = bvncdf(qam,  qbm, rho);
         Type p_obs = C_ab - C_amb - C_abm + C_ambm;
-        if (p_obs < Type(1e-300)) p_obs = Type(1e-300);
+        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300), Type(1e-300), p_obs);
         ll_draw(i) = log(p_obs);
       }
     } else if (family == FAM_CLAYTON) {
@@ -382,9 +379,13 @@ Type objective_function<Type>::operator() () {
         }
         // Clayton CDF lambda
         auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
-          if (th < Type(1e-10)) return u * v;
+          // Zero corners are structural (F(-1)=0) and stay zero for all
+          // parameter values on this tape.
+          if (u == Type(0.0) || v == Type(0.0)) return Type(0.0);
+          u = CppAD::CondExpLt(u, Type(1e-15), Type(1e-15), u);
+          v = CppAD::CondExpLt(v, Type(1e-15), Type(1e-15), v);
           Type inner = pow(u, -th) + pow(v, -th) - Type(1);
-          if (inner < Type(0)) inner = Type(0);
+          inner = CppAD::CondExpLt(inner, Type(1e-300), Type(1e-300), inner);
           return pow(inner, Type(-1.0) / th);
         };
         Type C_ab   = clayton_cdf(a1,   b1,  theta);
@@ -392,7 +393,7 @@ Type objective_function<Type>::operator() () {
         Type C_abm  = clayton_cdf(a1,   b1m, theta);
         Type C_ambm = clayton_cdf(a1m,  b1m, theta);
         Type p_obs = C_ab - C_amb - C_abm + C_ambm;
-        if (p_obs < Type(1e-300)) p_obs = Type(1e-300);
+        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300), Type(1e-300), p_obs);
         ll_draw(i) = log(p_obs);
       }
     }
@@ -405,7 +406,8 @@ Type objective_function<Type>::operator() () {
   vector<Type> log_contrib(n);
   for (int i = 0; i < n; i++) {
     Type mx = ll_all(i, 0);
-    for (int r = 1; r < R; r++) if (ll_all(i, r) > mx) mx = ll_all(i, r);
+    for (int r = 1; r < R; r++)
+      mx = CppAD::CondExpGt(ll_all(i, r), mx, ll_all(i, r), mx);
     Type s = 0;
     for (int r = 0; r < R; r++) s += exp(ll_all(i, r) - mx);
     log_contrib(i) = mx + log(s) - logR;
