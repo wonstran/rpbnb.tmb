@@ -167,7 +167,7 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   i1 <- 1:k1; i2 <- (k1 + 1):(k1 + k2)
   idx_end <- k1 + k2 + q1 + q2
 
-  obj <- TMB::MakeADFun(
+  configured <- .make_rpbnb_tmb_object(
     data = tmb_data,
     parameters = list(
       beta1 = start[i1],
@@ -179,9 +179,10 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
       z_dep = if (family_code >= 0L) start[idx_end + 3] else 0
     ),
     map = if (length(map) > 0) map else NULL,
-    DLL = "rpbnb.tmb",
-    silent = control$print_level == 0L
+    silent = control$print_level == 0L,
+    n_cores = control$n_cores
   )
+  obj <- configured$obj
 
   # Optimize with nlminb
   opt <- stats::nlminb(
@@ -251,6 +252,8 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     optimizer = opt,
     sdreport = sdr,
     obj = obj,
+    parallel = list(requested = control$n_cores,
+                    realized = configured$n_cores),
     call = match.call()
   )
   class(result) <- "rpbnb_tmb_fit"

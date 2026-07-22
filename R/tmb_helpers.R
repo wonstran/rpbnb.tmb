@@ -6,6 +6,49 @@
   TMB::dynlib(file.path(pkg_path, "src", "rpbnb.tmb"))
 }
 
+#' Configure the TMB model DLL's OpenMP thread count
+#' @keywords internal
+#' @noRd
+.configure_tmb_threads <- function(n_cores, DLL = "rpbnb.tmb") {
+  supported <- suppressWarnings(TMB::openmp(max = TRUE, DLL = DLL))
+  supported <- as.integer(supported[[1L]])
+  if (length(supported) != 1L || is.na(supported) || supported < 1L) {
+    supported <- 1L
+  }
+
+  requested <- as.integer(n_cores)
+  realized <- min(requested, supported)
+  TMB::openmp(n = realized, DLL = DLL)
+
+  if (realized < requested) {
+    warning(
+      sprintf("Requested %d TMB threads; using %d supported thread%s.",
+              requested, realized, if (realized == 1L) "" else "s"),
+      call. = FALSE
+    )
+  }
+
+  realized
+}
+
+#' Construct the RP-BNB TMB objective with an explicit thread setting
+#' @keywords internal
+#' @noRd
+.make_rpbnb_tmb_object <- function(data, parameters, map = NULL,
+                                   random = NULL, silent = TRUE,
+                                   n_cores = 1L, DLL = "rpbnb.tmb") {
+  realized <- .configure_tmb_threads(n_cores, DLL = DLL)
+  obj <- TMB::MakeADFun(
+    data = data,
+    parameters = parameters,
+    map = map,
+    random = random,
+    DLL = DLL,
+    silent = silent
+  )
+  list(obj = obj, n_cores = realized)
+}
+
 #' Build the TMB data list for the RP-BNB model
 #' @keywords internal
 #' @noRd

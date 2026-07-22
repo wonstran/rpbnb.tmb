@@ -265,6 +265,13 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               print_level = 0L,
                               n_cores = 1L,
                               halton_burn = 300L) {
+  if (length(n_cores) != 1L || !is.numeric(n_cores) ||
+      is.na(n_cores) || !is.finite(n_cores) ||
+      n_cores < 1 || n_cores != floor(n_cores) ||
+      n_cores > .Machine$integer.max) {
+    stop("n_cores must be one whole number greater than or equal to 1.",
+         call. = FALSE)
+  }
   structure(list(iterlim = as.integer(iterlim), reltol = reltol,
                  print_level = as.integer(print_level),
                  n_cores = as.integer(n_cores),
