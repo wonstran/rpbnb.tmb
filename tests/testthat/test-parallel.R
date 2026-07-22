@@ -44,6 +44,16 @@ copula_parallel_fixture <- function(family_code) {
   list(data = data, parameters = parameters, map = NULL)
 }
 
+parallel_fit_data <- function() {
+  set.seed(240722)
+  x <- seq(-1, 1, length.out = 100)
+  data.frame(
+    y1 = stats::rnbinom(100, size = 2, mu = exp(0.2 + 0.3 * x)),
+    y2 = stats::rnbinom(100, size = 3, mu = exp(-0.1 - 0.2 * x)),
+    x = x
+  )
+}
+
 test_that("rpbnb_tmb_control validates n_cores", {
   expect_error(rpbnb_tmb_control(n_cores = 0), "n_cores")
   expect_error(rpbnb_tmb_control(n_cores = -1), "n_cores")
@@ -84,13 +94,7 @@ test_that("TMB object construction records the realized thread count", {
 })
 
 test_that("fitted models record requested and realized threads", {
-  set.seed(240722)
-  x <- seq(-1, 1, length.out = 100)
-  d <- data.frame(
-    y1 = stats::rnbinom(100, size = 2, mu = exp(0.2 + 0.3 * x)),
-    y2 = stats::rnbinom(100, size = 3, mu = exp(-0.1 - 0.2 * x)),
-    x = x
-  )
+  d <- parallel_fit_data()
 
   fit <- fit_rpbnb_tmb(
     y1 ~ x, y2 ~ x, data = d,
@@ -99,6 +103,51 @@ test_that("fitted models record requested and realized threads", {
   )
 
   expect_identical(fit$parallel, list(requested = 1L, realized = 1L))
+})
+
+test_that("serial and parallel fitted models are numerically equivalent", {
+  previous <- TMB::openmp(DLL = "rpbnb.tmb")
+  on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
+  supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
+  if (supported < 2L) skip("TMB runtime supports only one thread")
+
+  d <- parallel_fit_data()
+  fit_serial <- fit_rpbnb_tmb(
+    y1 ~ x, y2 ~ x, data = d,
+    dependence = "independence",
+    control = rpbnb_tmb_control(iterlim = 100L, n_cores = 1L)
+  )
+  fit_parallel <- fit_rpbnb_tmb(
+    y1 ~ x, y2 ~ x, data = d,
+    dependence = "independence",
+    control = rpbnb_tmb_control(iterlim = 100L, n_cores = 2L)
+  )
+
+  expect_equal(coef(fit_parallel), coef(fit_serial), tolerance = 1e-6)
+  expect_equal(fit_parallel$se, fit_serial$se, tolerance = 1e-5)
+  expect_equal(fit_parallel$optimizer$objective,
+               fit_serial$optimizer$objective, tolerance = 1e-7)
+  expect_true(all(is.finite(coef(fit_parallel))))
+  expect_true(all(is.finite(fit_parallel$se)))
+  expect_identical(fit_parallel$parallel,
+                   list(requested = 2L, realized = 2L))
+})
+
+test_that("print reports the realized TMB thread count", {
+  x <- structure(
+    list(
+      logLik = -10, nobs = 5L, npar = 1L,
+      dependence = "independence", coef = c(beta = 0),
+      parallel = list(requested = 4L, realized = 2L)
+    ),
+    class = "rpbnb_tmb_fit"
+  )
+  output <- capture.output(print(x))
+  expect_true(any(output == "  TMB threads: 2"))
+
+  x$parallel <- NULL
+  legacy_output <- expect_no_error(capture.output(print(x)))
+  expect_false(any(grepl("TMB threads", legacy_output, fixed = TRUE)))
 })
 
 test_that("model DLL reports its compile-time OpenMP capability", {

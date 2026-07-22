@@ -24,6 +24,9 @@ print.rpbnb_tmb_fit <- function(x, ...) {
   cat("rpbnb_tmb fit\n")
   cat("  Log-likelihood:", format(x$logLik, digits = 6), "\n")
   cat("  Nobs:", x$nobs, "  Npar:", x$npar, "\n")
+  if (!is.null(x$parallel$realized)) {
+    cat(sprintf("  TMB threads: %d\n", as.integer(x$parallel$realized)))
+  }
   cat("  Dependence:", deparse(x$dependence), "\n")
   cat("\nCoefficients:\n")
   print(round(x$coef, 4))
