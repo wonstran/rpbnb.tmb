@@ -61,11 +61,12 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
   if (length(eq1)) {
     cat("--- Equation 1 (y1) ---\n")
     p1 <- 2 * pnorm(-abs(object$coef[eq1] / object$se[eq1]))
-    tbl1 <- cbind(Estimate = object$coef[eq1],
-                  `Std. Error` = object$se[eq1],
-                  `z value` = object$coef[eq1] / object$se[eq1],
-                  `Pr(>|z|)` = p1,
-                  Signif = .signif_stars(p1))
+    tbl1 <- data.frame(Estimate = object$coef[eq1],
+                       `Std. Error` = object$se[eq1],
+                       `z value` = object$coef[eq1] / object$se[eq1],
+                       `Pr(>|z|)` = p1,
+                       Signif = .signif_stars(p1),
+                       row.names = nm[eq1], check.names = FALSE)
     .print_tbl(tbl1)
     cat("\n")
   }
@@ -75,11 +76,12 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
   if (length(eq2)) {
     cat("--- Equation 2 (y2) ---\n")
     p2 <- 2 * pnorm(-abs(object$coef[eq2] / object$se[eq2]))
-    tbl2 <- cbind(Estimate = object$coef[eq2],
-                  `Std. Error` = object$se[eq2],
-                  `z value` = object$coef[eq2] / object$se[eq2],
-                  `Pr(>|z|)` = p2,
-                  Signif = .signif_stars(p2))
+    tbl2 <- data.frame(Estimate = object$coef[eq2],
+                       `Std. Error` = object$se[eq2],
+                       `z value` = object$coef[eq2] / object$se[eq2],
+                       `Pr(>|z|)` = p2,
+                       Signif = .signif_stars(p2),
+                       row.names = nm[eq2], check.names = FALSE)
     .print_tbl(tbl2)
     cat("\n")
   }
@@ -89,12 +91,13 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
   if (length(s1)) {
     cat("--- Random-coefficient SDs (equation 1) ---\n")
     p_s1 <- 2 * pnorm(-abs(object$coef[s1] / object$se[s1]))
-    tbl_s1 <- cbind(Estimate_log = object$coef[s1],
-                    Estimate = exp(object$coef[s1]),
-                    `Std. Error` = object$se[s1],
-                    `Pr(>|z|)` = p_s1,
-                    Signif = .signif_stars(p_s1))
-    rownames(tbl_s1) <- gsub("^log_sd1:|^log_s1:|^log_w1:", "sd1:", nm[s1])
+    tbl_s1 <- data.frame(Estimate_log = object$coef[s1],
+                         Estimate = exp(object$coef[s1]),
+                         `Std. Error` = object$se[s1],
+                         `Pr(>|z|)` = p_s1,
+                         Signif = .signif_stars(p_s1),
+                         row.names = gsub("^log_sd1:|^log_s1:|^log_w1:", "sd1:", nm[s1]),
+                         check.names = FALSE)
     .print_tbl(tbl_s1)
     cat("\n")
   }
@@ -104,12 +107,13 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
   if (length(s2)) {
     cat("--- Random-coefficient SDs (equation 2) ---\n")
     p_s2 <- 2 * pnorm(-abs(object$coef[s2] / object$se[s2]))
-    tbl_s2 <- cbind(Estimate_log = object$coef[s2],
-                    Estimate = exp(object$coef[s2]),
-                    `Std. Error` = object$se[s2],
-                    `Pr(>|z|)` = p_s2,
-                    Signif = .signif_stars(p_s2))
-    rownames(tbl_s2) <- gsub("^log_sd2:|^log_s2:|^log_w2:", "sd2:", nm[s2])
+    tbl_s2 <- data.frame(Estimate_log = object$coef[s2],
+                         Estimate = exp(object$coef[s2]),
+                         `Std. Error` = object$se[s2],
+                         `Pr(>|z|)` = p_s2,
+                         Signif = .signif_stars(p_s2),
+                         row.names = gsub("^log_sd2:|^log_s2:|^log_w2:", "sd2:", nm[s2]),
+                         check.names = FALSE)
     .print_tbl(tbl_s2)
     cat("\n")
   }
