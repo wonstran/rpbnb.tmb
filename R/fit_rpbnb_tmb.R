@@ -217,6 +217,12 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     vc <- matrix(NA_real_, npar, npar)
   }
 
+  rp_meta <- list(
+    Z1 = Z1, Z2 = Z2,
+    dist1 = spec1$dist, dist2 = spec2$dist,
+    sign1 = sign1, sign2 = sign2
+  )
+
   result <- list(
     coef = coef_vec,
     vcov = vc,
@@ -227,6 +233,11 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     m1 = m1_hat,
     m2 = m2_hat,
     dependence = dependence,
+    X1 = X1, X2 = X2,
+    Y1 = Y1, Y2 = Y2,
+    rand_idx1 = rand_idx1,
+    rand_idx2 = rand_idx2,
+    rp_meta = rp_meta,
     optimizer = opt,
     sdreport = sdr,
     obj = obj,
