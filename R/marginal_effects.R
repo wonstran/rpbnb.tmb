@@ -187,7 +187,15 @@ rpbnb_tmb_elasticities <- function(fit,
   # ---- Delta-method standard errors ----
   theta_names <- c(paste0(coef_prefix, cn), scale_names)
   theta_hat   <- fit$coef[theta_names]
-  V <- fit$vcov[theta_names, theta_names, drop = FALSE]
+  # Use positional indexing when dimnames are absent (e.g. TMB sdreport without
+  # named covariance).  Match by name when available.
+  vcov_mat <- fit$vcov
+  if (is.null(dimnames(vcov_mat))) {
+    idx <- match(theta_names, names(fit$coef))
+    V <- vcov_mat[idx, idx, drop = FALSE]
+  } else {
+    V <- vcov_mat[theta_names, theta_names, drop = FALSE]
+  }
 
   se <- rep(NA_real_, length(res))
   if (all(is.finite(V))) {
