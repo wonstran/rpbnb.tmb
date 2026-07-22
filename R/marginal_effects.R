@@ -124,8 +124,13 @@ rpbnb_tmb_elasticities <- function(fit,
     Z     <- fit$rp_meta[[paste0("Z", eq)]]
     dist  <- fit$rp_meta[[paste0("dist", eq)]]
     sign  <- fit$rp_meta[[paste0("sign", eq)]]
-    scale_key <- c("log_sd", "log_s", "log_w", "log_w")
-    scale_names <- paste0(scale_key[dist + 1], eq, ":", cn[rand_idx])
+    # Map distribution names to scale labels (mirrors rand_dist_registry)
+    scale_lab <- vapply(dist, function(d) {
+      switch(d, normal = "log_sd", lognormal = "log_s",
+             uniform = "log_w", triangular = "log_w",
+             stop("unknown distribution: ", d))
+    }, character(1))
+    scale_names <- paste0(scale_lab, eq, ":", cn[rand_idx])
     scales <- exp(fit$coef[scale_names])
     rr    <- rand_realize(Z, dist, sign, b[rand_idx], scales)
     dev   <- rr$dev
