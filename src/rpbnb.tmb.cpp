@@ -134,15 +134,21 @@ Type objective_function<Type>::operator() () {
       if (s < Type(0.0)) s = Type(0.0);
       return s;
     }
+    // Clamp correlation away from +/-1 and clamp sig to prevent division by zero
     Type sig = sqrt(Type(1.0) - r * r);
-    if (sig < Type(1e-15)) sig = Type(1e-15);
+    if (sig < Type(1e-6)) sig = Type(1e-6);
+    if (sig > Type(1.0)) sig = Type(1.0);
+    // Clamp oth to prevent extreme qnorm arguments
+    if (oth > Type(10.0)) oth = Type(10.0);
+    if (oth < Type(-10.0)) oth = Type(-10.0);
     // Choose shorter integration path: use min(Phi(h), Phi(k))
     Type ph = pnorm(h);
     Type pk = pnorm(k);
     Type a, oth;
     if (ph <= pk) { a = ph; oth = k; } else { a = pk; oth = h; }
-    if (a >= Type(1.0)) a = Type(1.0 - 1e-15);
-    if (a <= Type(0.0)) return Type(0);
+    if (a >= Type(1.0)) a = Type(1.0 - 1e-10);
+    if (a <= Type(0.0)) a = Type(1e-10);
+    if (a <= Type(1e-10)) a = Type(1e-10);
     // 20-point Gauss-Legendre quadrature on [0, a]
     static const double x20[10] = {0.9931285991850949, 0.9639719272779138,
       0.9122344282513259, 0.8391169718222188, 0.7463319064601508,

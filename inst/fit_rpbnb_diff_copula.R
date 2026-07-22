@@ -23,8 +23,9 @@ sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- 1. Data ----------------------------------------------------------------
 data <- read.csv(file.path("data", "rwm1984_bnb.csv"))
-# Use first 1000 observations for a quicker demo (copula path is heavier)
-data <- data[1:1000, ]
+# Use first 500 observations (copula path is heavier; fewer obs + fewer draws
+# keeps the AD tape manageable and reduces the risk of NaN gradients).
+data <- data[1:500, ]
 cat("=== RP-BNB (different formulas, Gaussian copula) on rwm1984 health counts ===\n")
 cat("Observations :", nrow(data), "\n")
 
@@ -46,7 +47,7 @@ t_fit <- system.time(
     random_1   = "hhninc",   # random slope on hhninc (eq 1), continuous, in f1
     random_2   = "educ",     # random slope on educ   (eq 2), continuous, in f2
     dependence = copula("normal"),   # Gaussian copula; try "frank" or "kimeldorf"
-    draws      = 150,        # fewer draws for quicker demo (copula path is heavy)
+    draws      = 100,        # fewer draws for quicker demo (copula path is heavy)
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
