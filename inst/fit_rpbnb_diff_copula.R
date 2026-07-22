@@ -20,6 +20,8 @@
 library(rpbnb.tmb)
 
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
+detected_cores <- parallel::detectCores(logical = FALSE)
+demo_cores <- if (is.na(detected_cores)) 1L else max(1L, min(4L, detected_cores))
 
 # ---- 1. Data ----------------------------------------------------------------
 data <- read.csv(file.path("data", "rwm1984_bnb.csv"))
@@ -51,7 +53,7 @@ t_fit <- system.time(
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
-      n_cores     = parallel::detectCores()
+      n_cores     = demo_cores
     )
   )
 )[["elapsed"]]

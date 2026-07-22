@@ -232,3 +232,31 @@ test_that("serial and parallel copula objectives and gradients agree", {
     expect_true(all(is.finite(parallel_gr)))
   }
 })
+
+test_that("parallel benchmark reports timing and numerical agreement", {
+  benchmark_path <- testthat::test_path(
+    "..", "..", "inst", "benchmark_parallel.R"
+  )
+  expect_true(file.exists(benchmark_path))
+  if (!file.exists(benchmark_path)) return(invisible())
+
+  benchmark <- paste(readLines(benchmark_path, warn = FALSE), collapse = "\n")
+  expect_match(benchmark, "realized", fixed = TRUE)
+  expect_match(benchmark, "speedup", fixed = TRUE)
+  expect_match(benchmark, "coef_diff", fixed = TRUE)
+  expect_match(benchmark, "se_diff", fixed = TRUE)
+  expect_match(benchmark, "objective_diff", fixed = TRUE)
+  expect_match(benchmark, "gradient_diff", fixed = TRUE)
+})
+
+test_that("demo scripts use a bounded physical-core count", {
+  demo_paths <- testthat::test_path(
+    "..", "..", "inst",
+    c("fit_rpbnb_diff_copula.R", "fit_rpbnb_diff_famoye.R")
+  )
+  for (demo_path in demo_paths) {
+    demo <- paste(readLines(demo_path, warn = FALSE), collapse = "\n")
+    expect_match(demo, "detectCores(logical = FALSE)", fixed = TRUE)
+    expect_match(demo, "n_cores     = demo_cores", fixed = TRUE)
+  }
+})
