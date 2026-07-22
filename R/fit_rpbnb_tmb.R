@@ -151,7 +151,7 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   tmb_data <- .build_tmb_data(Y1, Y2, X1, X2, rand_idx1, rand_idx2,
                               Z1, Z2, dist1, dist2, sign1, sign2,
                               family_code, poisson_1, poisson_2,
-                              lamLo, lamHi, n_cores = control$n_cores)
+                              lamLo, lamHi)
   # Map fixed parameters (e.g., pinned log_m for Poisson margins)
   map <- list()
   if (length(fixed_names)) {

@@ -8,7 +8,7 @@ parallel_tmb_fixture <- function() {
     dist1 = integer(0), dist2 = integer(0),
     sign1 = integer(0), sign2 = integer(0),
     family_code = -1L, pois1 = FALSE, pois2 = FALSE,
-    lamLo = -1, lamHi = 1, n_cores = 1L
+    lamLo = -1, lamHi = 1
   )
   parameters <- list(
     beta1 = 0, beta2 = 0,
@@ -17,6 +17,31 @@ parallel_tmb_fixture <- function() {
   )
   list(data = data, parameters = parameters,
        map = list(z_dep = factor(NA)))
+}
+
+copula_parallel_fixture <- function(family_code) {
+  x <- seq(-0.8, 0.8, length.out = 8L)
+  z1 <- matrix(c(0.15, 0.35, 0.65, 0.85), ncol = 1L)
+  z2 <- matrix(c(0.75, 0.25, 0.55, 0.45), ncol = 1L)
+  data <- .build_tmb_data(
+    Y1 = c(0, 1, 2, 0, 1, 3, 0, 2),
+    Y2 = c(1, 0, 1, 2, 0, 1, 3, 0),
+    X1 = cbind("(Intercept)" = 1, x = x),
+    X2 = cbind("(Intercept)" = 1, x = x),
+    rand_idx1 = 2L, rand_idx2 = 2L,
+    Z1 = z1, Z2 = z2,
+    dist1 = 0L, dist2 = 0L,
+    sign1 = 1L, sign2 = 1L,
+    family_code = family_code, pois1 = FALSE, pois2 = FALSE,
+    lamLo = 0, lamHi = 0
+  )
+  parameters <- list(
+    beta1 = c(0.1, 0.2), beta2 = c(-0.1, -0.15),
+    log_sd1 = log(0.2), log_sd2 = log(0.25),
+    log_m1 = log(0.6), log_m2 = log(0.7),
+    z_dep = if (family_code == 1L) 1.5 else atanh(0.25)
+  )
+  list(data = data, parameters = parameters, map = NULL)
 }
 
 test_that("rpbnb_tmb_control validates n_cores", {
@@ -103,4 +128,58 @@ test_that("model DLL reports its compile-time OpenMP capability", {
     configured$obj$report()$openmp_compiled,
     as.integer(toolchain_openmp)
   )
+})
+
+test_that("C++ likelihood declares a TMB parallel accumulator", {
+  cpp <- readLines(
+    testthat::test_path("..", "..", "src", "rpbnb.tmb.cpp"),
+    warn = FALSE
+  )
+  expect_true(any(grepl("parallel_accumulator<Type> nll", cpp, fixed = TRUE)))
+})
+
+test_that("serial and parallel copula objectives and gradients agree", {
+  previous <- TMB::openmp(DLL = "rpbnb.tmb")
+  on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
+  supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
+  if (supported < 2L) skip("TMB runtime supports only one thread")
+
+  reference_fn <- c(`1` = 23.1997247775494, `2` = 23.0779112497932)
+  reference_gr <- list(
+    `1` = c(-0.234213555458111, -0.644306804887814,
+            -0.305971489013748, -0.377991335683169,
+            0.0028883314805063, -0.00572813869692664,
+            0.468873423307357, 0.365165705931843,
+            0.739199683181961),
+    `2` = c(-0.0442292322068991, -0.604280050235007,
+            -0.668739747888821, -0.551604808939026,
+            0.00734542308301755, -0.00647710160389995,
+            0.443987374428227, 0.355502072666529,
+            3.79146327117669)
+  )
+
+  for (family_code in c(1L, 2L)) {
+    fixture <- copula_parallel_fixture(family_code)
+    serial <- .make_rpbnb_tmb_object(
+      data = fixture$data, parameters = fixture$parameters,
+      map = fixture$map, n_cores = 1L
+    )
+    par <- serial$obj$par
+    serial_fn <- serial$obj$fn(par)
+    serial_gr <- serial$obj$gr(par)
+    key <- as.character(family_code)
+    expect_equal(serial_fn, unname(reference_fn[[key]]), tolerance = 1e-10)
+    expect_equal(as.numeric(serial_gr), reference_gr[[key]], tolerance = 1e-8)
+
+    parallel <- .make_rpbnb_tmb_object(
+      data = fixture$data, parameters = fixture$parameters,
+      map = fixture$map, n_cores = 2L
+    )
+    parallel_fn <- parallel$obj$fn(par)
+    parallel_gr <- parallel$obj$gr(par)
+
+    expect_equal(parallel_fn, serial_fn, tolerance = 1e-10)
+    expect_equal(parallel_gr, serial_gr, tolerance = 1e-8)
+    expect_true(all(is.finite(parallel_gr)))
+  }
 })

@@ -40,8 +40,6 @@ Type objective_function<Type>::operator() () {
   DATA_INTEGER(pois2);
   DATA_SCALAR(lamLo);
   DATA_SCALAR(lamHi);
-  DATA_INTEGER(n_cores);
-  (void)n_cores;
 
   // ---- Parameters ----
   PARAMETER_VECTOR(beta1);
@@ -62,7 +60,6 @@ Type objective_function<Type>::operator() () {
   int openmp_compiled = 0;
 #ifdef _OPENMP
   openmp_compiled = 1;
-  if (n_cores > 0) omp_set_num_threads(n_cores);
 #endif
   REPORT(openmp_compiled);
 
@@ -189,234 +186,157 @@ Type objective_function<Type>::operator() () {
     }
   }
 
-  // ---- Per-draw loop (MSL: average likelihood over draws) ----
+  // Precompute parameter-dependent deviations once per simulation draw.  The
+  // matrices are read-only while observation contributions are accumulated.
+  matrix<Type> dev1(R, q1), dev2(R, q2);
+  for (int r = 0; r < R; r++) {
+    for (int j = 0; j < q1; j++) {
+      Type base = u_to_base(Z1(r, j), dist1(j));
+      int col = rand_idx1(j);
+      dev1(r, j) = compute_dev(beta1(col), sd1(j), base,
+                               dist1(j), sign1(j));
+    }
+    for (int j = 0; j < q2; j++) {
+      Type base = u_to_base(Z2(r, j), dist2(j));
+      int col = rand_idx2(j);
+      dev2(r, j) = compute_dev(beta2(col), sd2(j), base,
+                               dist2(j), sign2(j));
+    }
+  }
+
+  // TMB partitions these independent observation contributions across its
+  // configured OpenMP regions while keeping each draw reduction local.
+  parallel_accumulator<Type> nll(this);
   const Type logR = log(Type(R));
 
-  // For the independence case: single draw, no dependence term
-  // For random coefficients: average over draws
+  for (int i = 0; i < n; i++) {
+    vector<Type> log_draw(R);
 
-  // Storage for log-lik per draw per obs
-  matrix<Type> ll_all(n, R);
-
-  // TMB's AD tape cannot safely be recorded by this raw OpenMP loop.  Keep the
-  // draw loop deterministic; parallelization requires TMB's dedicated
-  // parallel_accumulator machinery rather than a shared AD tape.
-  for (int r = 0; r < R; r++) {
-    vector<Type> ll_draw(n);
-    // Compute per-draw eta = xb + XR * dev
-    vector<Type> eta1 = xb1;
-    vector<Type> eta2 = xb2;
-    if (q1 > 0) {
+    for (int r = 0; r < R; r++) {
+      Type eta1 = xb1(i);
+      Type eta2 = xb2(i);
       for (int j = 0; j < q1; j++) {
-        int col = rand_idx1(j);  // 0-based column in X1
-        Type u = Z1(r, j);
-        Type base = u_to_base(u, dist1(j));
-        Type dev = compute_dev(beta1(col), sd1(j), base, dist1(j), sign1(j));
-        for (int i = 0; i < n; i++) eta1(i) += X1(i, col) * dev;
+        eta1 += X1(i, rand_idx1(j)) * dev1(r, j);
       }
-    }
-    if (q2 > 0) {
       for (int j = 0; j < q2; j++) {
-        int col = rand_idx2(j);
-        Type u = Z2(r, j);
-        Type base = u_to_base(u, dist2(j));
-        Type dev = compute_dev(beta2(col), sd2(j), base, dist2(j), sign2(j));
-        for (int i = 0; i < n; i++) eta2(i) += X2(i, col) * dev;
+        eta2 += X2(i, rand_idx2(j)) * dev2(r, j);
       }
-    }
 
-    // Per-draw means
-    vector<Type> mu1(n), mu2(n);
-    for (int i = 0; i < n; i++) {
-      mu1(i) = exp(clamp_ad(eta1(i), Type(-690.0), Type(34.538776394910684)));
-      mu2(i) = exp(clamp_ad(eta2(i), Type(-690.0), Type(34.538776394910684)));
-    }
+      Type mu1 = exp(clamp_ad(eta1, Type(-690.0),
+                              Type(34.538776394910684)));
+      Type mu2 = exp(clamp_ad(eta2, Type(-690.0),
+                              Type(34.538776394910684)));
 
-    // Per-observation log-likelihood for this draw
-    if (family == FAM_FAMOYE) {
-      // Famoye: P1 * P2 * [1 + lam * (e^-y - c1) * (e^-y - c2)]
-      // Use the exact Poisson branch when pois1/pois2 is set
-      for (int i = 0; i < n; i++) {
-        // NB2 log-pmf (or Poisson if pois flag set)
-        Type lnb1, lnb2;
-        if (pois1) {
-          lnb1 = dpois(Y1(i), mu1(i), true);
-        } else {
-          lnb1 = dnbinom2(Y1(i), mu1(i), mu1(i) + m1 * mu1(i) * mu1(i), true);
-        }
-        if (pois2) {
-          lnb2 = dpois(Y2(i), mu2(i), true);
-        } else {
-          lnb2 = dnbinom2(Y2(i), mu2(i), mu2(i) + m2 * mu2(i) * mu2(i), true);
-        }
+      if (family == FAM_FAMOYE) {
+        Type lnb1 = pois1 ? dpois(Y1(i), mu1, true)
+                          : dnbinom2(Y1(i), mu1,
+                                     mu1 + m1 * mu1 * mu1, true);
+        Type lnb2 = pois2 ? dpois(Y2(i), mu2, true)
+                          : dnbinom2(Y2(i), mu2,
+                                     mu2 + m2 * mu2 * mu2, true);
 
-        // c_val = (1 + d * m * mu)^(-1/m) or exp(-d * mu) for Poisson
-        Type c1, c2;
-        if (pois1) {
-          c1 = exp(-famoye_d * mu1(i));
-        } else {
-          c1 = pow(Type(1.0) + famoye_d * m1 * mu1(i), Type(-1.0) / m1);
-        }
-        if (pois2) {
-          c2 = exp(-famoye_d * mu2(i));
-        } else {
-          c2 = pow(Type(1.0) + famoye_d * m2 * mu2(i), Type(-1.0) / m2);
-        }
-
+        Type c1 = pois1
+          ? exp(-famoye_d * mu1)
+          : pow(Type(1.0) + famoye_d * m1 * mu1, Type(-1.0) / m1);
+        Type c2 = pois2
+          ? exp(-famoye_d * mu2)
+          : pow(Type(1.0) + famoye_d * m2 * mu2, Type(-1.0) / m2);
         Type dep = Type(1.0) + lam * (ey1(i) - c1) * (ey2(i) - c2);
         dep = CppAD::CondExpLt(dep, Type(1e-300), Type(1e-300), dep);
+        log_draw(r) = lnb1 + lnb2 + log(dep);
+      } else if (family == FAM_INDEP) {
+        Type lnb1 = pois1 ? dpois(Y1(i), mu1, true)
+                          : dnbinom2(Y1(i), mu1,
+                                     mu1 + m1 * mu1 * mu1, true);
+        Type lnb2 = pois2 ? dpois(Y2(i), mu2, true)
+                          : dnbinom2(Y2(i), mu2,
+                                     mu2 + m2 * mu2 * mu2, true);
+        log_draw(r) = lnb1 + lnb2;
+      } else {
+        Type a1, a1m, b1, b1m;
+        if (pois1) {
+          a1 = ppois(Y1(i), mu1);
+          a1m = (Y1(i) > Type(0))
+            ? ppois(Y1(i) - Type(1), mu1) : Type(0);
+        } else {
+          Type p1 = r1 / (r1 + mu1);
+          a1 = pbeta(p1, r1, Y1(i) + Type(1));
+          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1, Y1(i)) : Type(0);
+        }
+        if (pois2) {
+          b1 = ppois(Y2(i), mu2);
+          b1m = (Y2(i) > Type(0))
+            ? ppois(Y2(i) - Type(1), mu2) : Type(0);
+        } else {
+          Type p2 = r2 / (r2 + mu2);
+          b1 = pbeta(p2, r2, Y2(i) + Type(1));
+          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2, Y2(i)) : Type(0);
+        }
 
-        ll_draw(i) = lnb1 + lnb2 + log(dep);
-      }
-    } else if (family == FAM_INDEP) {
-      // Independence: just product of two NB2 (no dependence term)
-      for (int i = 0; i < n; i++) {
-        Type lnb1 = pois1 ? dpois(Y1(i), mu1(i), true)
-                          : dnbinom2(Y1(i), mu1(i), mu1(i) + m1 * mu1(i) * mu1(i), true);
-        Type lnb2 = pois2 ? dpois(Y2(i), mu2(i), true)
-                          : dnbinom2(Y2(i), mu2(i), mu2(i) + m2 * mu2(i) * mu2(i), true);
-        ll_draw(i) = lnb1 + lnb2;
-      }
-    } else if (family == FAM_FRANK) {
-      // Frank copula: C(u,v;theta) = -1/theta * log(1 + (e^{-theta*u}-1)(e^{-theta*v}-1)/(e^{-theta}-1))
-      for (int i = 0; i < n; i++) {
-        // NB2 CDF corners
-        Type a1, a1m, b1, b1m;
-        Type r1i = r1, r2i = r2;
-        // Eq1 CDF
-        if (pois1) {
-          a1 = ppois(Y1(i), mu1(i));
-          a1m = (Y1(i) > Type(0)) ? ppois(Y1(i) - Type(1), mu1(i)) : Type(0);
+        Type C_ab, C_amb, C_abm, C_ambm;
+        if (family == FAM_FRANK) {
+          auto frank_cdf = [](Type u, Type v, Type th) -> Type {
+            Type ratio = (exp(-th * u) - Type(1.0)) *
+                         (exp(-th * v) - Type(1.0)) /
+                         (exp(-th) - Type(1.0));
+            ratio = CppAD::CondExpLt(ratio, Type(-1.0 + 1e-15),
+                                     Type(-1.0 + 1e-15), ratio);
+            return -log(Type(1.0) + ratio) / th;
+          };
+          C_ab   = frank_cdf(a1,   b1,  theta);
+          C_amb  = frank_cdf(a1m,  b1,  theta);
+          C_abm  = frank_cdf(a1,   b1m, theta);
+          C_ambm = frank_cdf(a1m,  b1m, theta);
+        } else if (family == FAM_GAUSSIAN) {
+          auto safe_qnorm = [](Type p) -> Type {
+            p = CppAD::CondExpLt(p, Type(1e-15), Type(1e-15), p);
+            p = CppAD::CondExpGt(p, Type(1.0 - 1e-15),
+                                 Type(1.0 - 1e-15), p);
+            return qnorm(p);
+          };
+          Type qa = safe_qnorm(a1);
+          Type qam = safe_qnorm(a1m);
+          Type qb = safe_qnorm(b1);
+          Type qbm = safe_qnorm(b1m);
+          C_ab   = bvncdf(qa,   qb,  rho);
+          C_amb  = bvncdf(qam,  qb,  rho);
+          C_abm  = bvncdf(qa,   qbm, rho);
+          C_ambm = bvncdf(qam,  qbm, rho);
         } else {
-          Type p1 = r1i / (r1i + mu1(i));
-          a1 = pbeta(p1, r1i, Y1(i) + Type(1));
-          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1i, Y1(i)) : Type(0);
+          auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
+            if (u == Type(0.0) || v == Type(0.0)) return Type(0.0);
+            u = CppAD::CondExpLt(u, Type(1e-15), Type(1e-15), u);
+            v = CppAD::CondExpLt(v, Type(1e-15), Type(1e-15), v);
+            Type inner = pow(u, -th) + pow(v, -th) - Type(1);
+            inner = CppAD::CondExpLt(inner, Type(1e-300),
+                                     Type(1e-300), inner);
+            return pow(inner, Type(-1.0) / th);
+          };
+          C_ab   = clayton_cdf(a1,   b1,  theta);
+          C_amb  = clayton_cdf(a1m,  b1,  theta);
+          C_abm  = clayton_cdf(a1,   b1m, theta);
+          C_ambm = clayton_cdf(a1m,  b1m, theta);
         }
-        // Eq2 CDF
-        if (pois2) {
-          b1 = ppois(Y2(i), mu2(i));
-          b1m = (Y2(i) > Type(0)) ? ppois(Y2(i) - Type(1), mu2(i)) : Type(0);
-        } else {
-          Type p2 = r2i / (r2i + mu2(i));
-          b1 = pbeta(p2, r2i, Y2(i) + Type(1));
-          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2i, Y2(i)) : Type(0);
-        }
-        // Frank CDF lambda
-        auto frank_cdf = [](Type u, Type v, Type th) -> Type {
-          Type ratio = (exp(-th * u) - Type(1.0)) *
-                       (exp(-th * v) - Type(1.0)) /
-                       (exp(-th) - Type(1.0));
-          ratio = CppAD::CondExpLt(ratio, Type(-1.0 + 1e-15),
-                                   Type(-1.0 + 1e-15), ratio);
-          return -log(Type(1.0) + ratio) / th;
-        };
-        Type C_ab   = frank_cdf(a1,   b1,  theta);
-        Type C_amb  = frank_cdf(a1m,  b1,  theta);
-        Type C_abm  = frank_cdf(a1,   b1m, theta);
-        Type C_ambm = frank_cdf(a1m,  b1m, theta);
+
         Type p_obs = C_ab - C_amb - C_abm + C_ambm;
-        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300), Type(1e-300), p_obs);
-        ll_draw(i) = log(p_obs);
-      }
-    } else if (family == FAM_GAUSSIAN) {
-      // Gaussian copula: C(u,v;rho) = Phi_2(Phi^{-1}(u), Phi^{-1}(v); rho)
-      for (int i = 0; i < n; i++) {
-        // NB2 CDF corners
-        Type a1, a1m, b1, b1m;
-        Type r1i = r1, r2i = r2;
-        if (pois1) {
-          a1 = ppois(Y1(i), mu1(i));
-          a1m = (Y1(i) > Type(0)) ? ppois(Y1(i) - Type(1), mu1(i)) : Type(0);
-        } else {
-          Type p1 = r1i / (r1i + mu1(i));
-          a1 = pbeta(p1, r1i, Y1(i) + Type(1));
-          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1i, Y1(i)) : Type(0);
-        }
-        if (pois2) {
-          b1 = ppois(Y2(i), mu2(i));
-          b1m = (Y2(i) > Type(0)) ? ppois(Y2(i) - Type(1), mu2(i)) : Type(0);
-        } else {
-          Type p2 = r2i / (r2i + mu2(i));
-          b1 = pbeta(p2, r2i, Y2(i) + Type(1));
-          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2i, Y2(i)) : Type(0);
-        }
-        // qnorm of each corner, clamped for numerical stability
-        auto safe_qnorm = [](Type p) -> Type {
-          p = CppAD::CondExpLt(p, Type(1e-15), Type(1e-15), p);
-          p = CppAD::CondExpGt(p, Type(1.0 - 1e-15), Type(1.0 - 1e-15), p);
-          return qnorm(p);
-        };
-        Type qa  = safe_qnorm(a1);
-        Type qam = safe_qnorm(a1m);
-        Type qb  = safe_qnorm(b1);
-        Type qbm = safe_qnorm(b1m);
-        Type C_ab   = bvncdf(qa,   qb,  rho);
-        Type C_amb  = bvncdf(qam,  qb,  rho);
-        Type C_abm  = bvncdf(qa,   qbm, rho);
-        Type C_ambm = bvncdf(qam,  qbm, rho);
-        Type p_obs = C_ab - C_amb - C_abm + C_ambm;
-        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300), Type(1e-300), p_obs);
-        ll_draw(i) = log(p_obs);
-      }
-    } else if (family == FAM_CLAYTON) {
-      // Clayton copula: C(u,v;th) = max(u^{-th} + v^{-th} - 1, 0)^{-1/th}
-      for (int i = 0; i < n; i++) {
-        // NB2 CDF corners
-        Type a1, a1m, b1, b1m;
-        Type r1i = r1, r2i = r2;
-        if (pois1) {
-          a1 = ppois(Y1(i), mu1(i));
-          a1m = (Y1(i) > Type(0)) ? ppois(Y1(i) - Type(1), mu1(i)) : Type(0);
-        } else {
-          Type p1 = r1i / (r1i + mu1(i));
-          a1 = pbeta(p1, r1i, Y1(i) + Type(1));
-          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1i, Y1(i)) : Type(0);
-        }
-        if (pois2) {
-          b1 = ppois(Y2(i), mu2(i));
-          b1m = (Y2(i) > Type(0)) ? ppois(Y2(i) - Type(1), mu2(i)) : Type(0);
-        } else {
-          Type p2 = r2i / (r2i + mu2(i));
-          b1 = pbeta(p2, r2i, Y2(i) + Type(1));
-          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2i, Y2(i)) : Type(0);
-        }
-        // Clayton CDF lambda
-        auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
-          // Zero corners are structural (F(-1)=0) and stay zero for all
-          // parameter values on this tape.
-          if (u == Type(0.0) || v == Type(0.0)) return Type(0.0);
-          u = CppAD::CondExpLt(u, Type(1e-15), Type(1e-15), u);
-          v = CppAD::CondExpLt(v, Type(1e-15), Type(1e-15), v);
-          Type inner = pow(u, -th) + pow(v, -th) - Type(1);
-          inner = CppAD::CondExpLt(inner, Type(1e-300), Type(1e-300), inner);
-          return pow(inner, Type(-1.0) / th);
-        };
-        Type C_ab   = clayton_cdf(a1,   b1,  theta);
-        Type C_amb  = clayton_cdf(a1m,  b1,  theta);
-        Type C_abm  = clayton_cdf(a1,   b1m, theta);
-        Type C_ambm = clayton_cdf(a1m,  b1m, theta);
-        Type p_obs = C_ab - C_amb - C_abm + C_ambm;
-        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300), Type(1e-300), p_obs);
-        ll_draw(i) = log(p_obs);
+        p_obs = CppAD::CondExpLt(p_obs, Type(1e-300),
+                                 Type(1e-300), p_obs);
+        log_draw(r) = log(p_obs);
       }
     }
 
-    // Store per-draw LL
-    for (int i = 0; i < n; i++) ll_all(i, r) = ll_draw(i);
+    Type max_log = log_draw(0);
+    for (int r = 1; r < R; r++) {
+      max_log = CppAD::CondExpGt(log_draw(r), max_log,
+                                 log_draw(r), max_log);
+    }
+    Type scaled_sum = Type(0);
+    for (int r = 0; r < R; r++) {
+      scaled_sum += exp(log_draw(r) - max_log);
+    }
+    Type log_contribution = max_log + log(scaled_sum) - logR;
+    nll -= log_contribution;
   }
-
-  // ---- Row-wise log-sum-exp over draws ----
-  vector<Type> log_contrib(n);
-  for (int i = 0; i < n; i++) {
-    Type mx = ll_all(i, 0);
-    for (int r = 1; r < R; r++)
-      mx = CppAD::CondExpGt(ll_all(i, r), mx, ll_all(i, r), mx);
-    Type s = 0;
-    for (int r = 0; r < R; r++) s += exp(ll_all(i, r) - mx);
-    log_contrib(i) = mx + log(s) - logR;
-  }
-
-  Type nll = -sum(log_contrib);
 
   // ---- REPORT derived parameters for sdreport ----
   ADREPORT(m1);
