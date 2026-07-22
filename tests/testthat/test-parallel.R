@@ -75,3 +75,32 @@ test_that("fitted models record requested and realized threads", {
 
   expect_identical(fit$parallel, list(requested = 1L, realized = 1L))
 })
+
+test_that("model DLL reports its compile-time OpenMP capability", {
+  makeconf <- file.path(R.home("etc"), .Platform$r_arch, "Makeconf")
+  if (!file.exists(makeconf)) makeconf <- file.path(R.home("etc"), "Makeconf")
+  openmp_line <- grep(
+    "^SHLIB_OPENMP_CXXFLAGS[[:space:]]*=",
+    readLines(makeconf, warn = FALSE), value = TRUE
+  )
+  toolchain_openmp <- length(openmp_line) == 1L &&
+    nzchar(trimws(sub("^[^=]*=", "", openmp_line)))
+
+  fixture <- parallel_tmb_fixture()
+  previous <- TMB::openmp(DLL = "rpbnb.tmb")
+  on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
+  supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
+  requested <- if (toolchain_openmp && supported >= 2L) 2L else 1L
+  configured <- .make_rpbnb_tmb_object(
+    data = fixture$data,
+    parameters = fixture$parameters,
+    map = fixture$map,
+    n_cores = requested
+  )
+
+  expect_identical(configured$n_cores, requested)
+  expect_identical(
+    configured$obj$report()$openmp_compiled,
+    as.integer(toolchain_openmp)
+  )
+})

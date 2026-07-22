@@ -59,9 +59,12 @@ Type objective_function<Type>::operator() () {
   int q1 = rand_idx1.size();
   int q2 = rand_idx2.size();
   int R = (q1 + q2 > 0) ? Z1.rows() : 1;
+  int openmp_compiled = 0;
 #ifdef _OPENMP
+  openmp_compiled = 1;
   if (n_cores > 0) omp_set_num_threads(n_cores);
 #endif
+  REPORT(openmp_compiled);
 
   // ---- Natural-scale parameters ----
   auto clamp_ad = [](Type x, Type lo, Type hi) -> Type {

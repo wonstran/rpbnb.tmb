@@ -1,4 +1,4 @@
 ## TMB linking: append TMB's C++ flags
 CXX_STD = CXX17
-PKG_CXXFLAGS = $(TMB_CXXFLAGS) $(shell $(R_HOME)/bin$(R_ARCH_BIN)/Rscript -e "cat(paste0('-I', system.file('include', package='RcppEigen')))")
-PKG_LIBS = $(TMB_LIBS)
+PKG_CXXFLAGS = $(TMB_CXXFLAGS) $(SHLIB_OPENMP_CXXFLAGS) $(shell $(R_HOME)/bin$(R_ARCH_BIN)/Rscript -e "cat(paste0('-I', system.file('include', package='RcppEigen')))")
+PKG_LIBS = $(TMB_LIBS) $(SHLIB_OPENMP_CXXFLAGS)
