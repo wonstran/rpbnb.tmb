@@ -37,18 +37,25 @@ print.rpbnb_tmb_fit <- function(x, ...) {
          symbols = c("***", "**", "*", ".", " "))
 }
 
-# Print a coefficient table: 4 digits, no quotes around column names
-.print_tbl <- function(x) {
-  # Format every entry to 4 decimal places
+# Print a coefficient table: controlled decimal places, no quotes on column names.
+# digits = 4 (default): 4 decimal places. digits < 0: full precision.
+.print_tbl <- function(x, digits = 4) {
   x <- as.data.frame(x)
-  for (j in seq_len(ncol(x))) {
-    if (is.numeric(x[[j]])) x[[j]] <- sprintf("%.4f", x[[j]])
+  if (!is.null(digits) && digits >= 0) {
+    fmt <- sprintf("%%.%df", digits)
+    for (j in seq_len(ncol(x))) {
+      if (is.numeric(x[[j]])) x[[j]] <- sprintf(fmt, x[[j]])
+    }
   }
   print(x, print.gap = 3)
 }
 
+#' @param object A fitted model object of class rpbnb_tmb_fit.
+#' @param digits Number of decimal places for numeric columns in coefficient
+#'   tables. Default 4. Use a negative value (e.g. -1) for full precision.
+#' @param ... Not used.
 #' @export
-summary.rpbnb_tmb_fit <- function(object, ...) {
+summary.rpbnb_tmb_fit <- function(object, digits = 4L, ...) {
   cat("Summary: rpbnb_tmb fit\n")
   cat("  Log-likelihood:", format(object$logLik, digits = 6),
       "  AIC:", format(AIC(object), digits = 6),
@@ -67,7 +74,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                        `Pr(>|z|)` = p1,
                        Signif = .signif_stars(p1),
                        row.names = nm[eq1], check.names = FALSE)
-    .print_tbl(tbl1)
+    .print_tbl(tbl1, digits)
     cat("\n")
   }
 
@@ -82,7 +89,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                        `Pr(>|z|)` = p2,
                        Signif = .signif_stars(p2),
                        row.names = nm[eq2], check.names = FALSE)
-    .print_tbl(tbl2)
+    .print_tbl(tbl2, digits)
     cat("\n")
   }
 
@@ -98,7 +105,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                          Signif = .signif_stars(p_s1),
                          row.names = gsub("^log_sd1:|^log_s1:|^log_w1:", "sd1:", nm[s1]),
                          check.names = FALSE)
-    .print_tbl(tbl_s1)
+    .print_tbl(tbl_s1, digits)
     cat("\n")
   }
 
@@ -114,7 +121,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
                          Signif = .signif_stars(p_s2),
                          row.names = gsub("^log_sd2:|^log_s2:|^log_w2:", "sd2:", nm[s2]),
                          check.names = FALSE)
-    .print_tbl(tbl_s2)
+    .print_tbl(tbl_s2, digits)
     cat("\n")
   }
 
@@ -125,7 +132,7 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
     Estimate  = c(object$m1, object$m2),
     row.names = NULL
   )
-  .print_tbl(disp)
+  .print_tbl(disp, digits)
   cat("\n")
 
   # ---- Dependence parameter (from sdreport) ----
@@ -143,8 +150,8 @@ summary.rpbnb_tmb_fit <- function(object, ...) {
     if (!inherits(sdr_sum, "try-error") && dep_name %in% rownames(sdr_sum)) {
       dep_val <- sdr_sum[dep_name, "Estimate"]
       dep_se  <- sdr_sum[dep_name, "Std. Error"]
-      cat("  ", dep_name, " =", format(dep_val, digits = 4),
-          "  Std. Error =", format(dep_se, digits = 4), "\n")
+      cat("  ", dep_name, " =", format(dep_val, digits = if (digits >= 0) digits else 6),
+          "  Std. Error =", format(dep_se, digits = if (digits >= 0) digits else 6), "\n")
     } else {
       cat("  (dependence parameter not in sdreport)\n")
     }
