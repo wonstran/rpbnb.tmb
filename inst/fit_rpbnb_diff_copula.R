@@ -22,9 +22,9 @@ library(rpbnb.tmb)
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- Settings ---------------------------------------------------------------
-n_obs <- 500L
-draws <- 20L
-n_cores <- parallel::detectCores(logical = FALSE)
+n_obs <- 5000L
+draws <- 400L
+n_cores <- 8 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
@@ -52,7 +52,7 @@ t_fit <- system.time(
     data       = data,
     random_1   = "hhninc",   # random slope on hhninc (eq 1), continuous, in f1
     random_2   = "educ",     # random slope on educ   (eq 2), continuous, in f2
-    dependence = copula("frank"),   # try "frank" or "kimeldorf"
+    dependence = copula("frank"),   # try "normal" or "kimeldorf"
     draws      = draws,
     seed       = 20240712,
     control    = rpbnb_tmb_control(
@@ -99,5 +99,5 @@ sep(); cat("AVERAGE MARGINAL EFFECTS (AME)\n"); sep()
 rpbnb_tmb_marginal_effects(fit, which = "both")
 
 # ---- 7. Elasticities / semi-elasticities (AME) --------------------------------
-sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
-rpbnb_tmb_elasticities(fit, which = "both")
+#sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
+#rpbnb_tmb_elasticities(fit, which = "both")

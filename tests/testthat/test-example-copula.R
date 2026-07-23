@@ -16,13 +16,9 @@ test_that("copula example parses", {
 test_that("copula example has three editable workload settings", {
   script <- copula_example_text()
 
-  expect_match(script, "n_obs <- 500L", fixed = TRUE)
-  expect_match(script, "draws <- 20L", fixed = TRUE)
-  expect_match(
-    script,
-    "n_cores <- parallel::detectCores(logical = FALSE)",
-    fixed = TRUE
-  )
+  expect_match(script, "n_obs <- 5000L", fixed = TRUE)
+  expect_match(script, "draws <- 400L", fixed = TRUE)
+  expect_match(script, "n_cores <- 8", fixed = TRUE)
   expect_match(
     script,
     "if (is.na(n_cores)) n_cores <- 1L",

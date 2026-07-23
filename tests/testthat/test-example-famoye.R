@@ -12,7 +12,7 @@ test_that("Famoye example has three editable workload settings", {
   expect_match(script, "draws <- 400L", fixed = TRUE)
   expect_match(
     script,
-    "n_cores <- parallel::detectCores(logical = FALSE)",
+    "n_cores <- 8",
     fixed = TRUE
   )
   expect_match(

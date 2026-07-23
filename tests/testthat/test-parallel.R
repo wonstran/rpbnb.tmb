@@ -249,7 +249,7 @@ test_that("parallel benchmark reports timing and numerical agreement", {
   expect_match(benchmark, "gradient_diff", fixed = TRUE)
 })
 
-test_that("demo scripts use physical-core counts", {
+test_that("demo scripts use configured core counts", {
   demo_paths <- testthat::test_path(
     "..", "..", "inst",
     c("fit_rpbnb_diff_copula.R", "fit_rpbnb_diff_famoye.R")
@@ -263,23 +263,13 @@ test_that("demo scripts use physical-core counts", {
     collapse = "\n"
   )
 
-  expect_match(
-    copula_demo,
-    "n_cores <- parallel::detectCores(logical = FALSE)",
-    fixed = TRUE
-  )
+  expect_match(copula_demo, "n_cores <- 8", fixed = TRUE)
   expect_match(copula_demo, "n_cores     = n_cores", fixed = TRUE)
-  expect_false(grepl("min(4L", copula_demo, fixed = TRUE))
 
-  expect_match(
-    famoye_demo,
-    "n_cores <- parallel::detectCores(logical = FALSE)",
-    fixed = TRUE
-  )
+  expect_match(famoye_demo, "n_cores <- 8", fixed = TRUE)
   expect_match(
     famoye_demo,
     "n_cores     = n_cores",
     fixed = TRUE
   )
-  expect_false(grepl("min(2L", famoye_demo, fixed = TRUE))
 })
