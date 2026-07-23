@@ -263,14 +263,13 @@ test_that("demo scripts use physical-core counts", {
     collapse = "\n"
   )
 
-  expect_match(copula_demo, "detectCores(logical = FALSE)", fixed = TRUE)
-  expect_match(copula_demo, "max(1L, min(4L", fixed = TRUE)
   expect_match(
     copula_demo,
-    '.example_positive_integer("RPBNB_N_CORES", default_cores)',
+    "n_cores <- parallel::detectCores(logical = FALSE)",
     fixed = TRUE
   )
-  expect_match(copula_demo, "n_cores     = example_cores", fixed = TRUE)
+  expect_match(copula_demo, "n_cores     = n_cores", fixed = TRUE)
+  expect_false(grepl("min(4L", copula_demo, fixed = TRUE))
 
   expect_match(
     famoye_demo,

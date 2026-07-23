@@ -15,85 +15,25 @@
 # noticeably heavier than the Famoye path. Lower draws or use a data subset for
 # a quicker look. Run from the package root:
 #   library(rpbnb.tmb); source("inst/fit_rpbnb_diff_copula.R")
-#
-# Optional configuration before sourcing:
-#   Sys.setenv(
-#     RPBNB_N_OBS = 500,
-#     RPBNB_DRAWS = 20,
-#     RPBNB_N_CORES = 4
-#   )
 # =============================================================================
 
 library(rpbnb.tmb)
 
-.example_positive_integer <- function(name, default) {
-  raw <- Sys.getenv(name, unset = "")
-  if (!nzchar(raw)) return(as.integer(default))
-
-  value <- suppressWarnings(as.numeric(raw))
-  valid <- length(value) == 1L &&
-    is.finite(value) &&
-    value >= 1 &&
-    value == floor(value) &&
-    value <= .Machine$integer.max
-  if (!valid) {
-    stop(name, " must be a single positive integer.", call. = FALSE)
-  }
-  as.integer(value)
-}
-
-.example_observation_count <- function(requested, available) {
-  if (requested > available) {
-    message(
-      "RPBNB_N_OBS requested ", requested,
-      " rows; using all ", available, " available rows."
-    )
-  }
-  as.integer(min(requested, available))
-}
-
-.example_fit_diagnostics <- function(fit, elapsed) {
-  requested <- fit$parallel$requested
-  realized <- fit$parallel$realized
-  convergence <- fit$optimizer$convergence
-  optimizer_message <- fit$optimizer$message
-  pd_hessian <- isTRUE(fit$sdreport$pdHess)
-
-  cat(sprintf("\nEstimation finished in %.2f s\n", elapsed))
-  cat(sprintf(
-    "TMB threads: requested=%d, realized=%d\n",
-    requested, realized
-  ))
-  cat(sprintf(
-    "Optimizer: code=%d, message=%s\n",
-    convergence, optimizer_message
-  ))
-  cat(
-    "sdreport positive-definite Hessian:",
-    if (pd_hessian) "yes" else "no",
-    "\n"
-  )
-}
-
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
-detected_cores <- parallel::detectCores(logical = FALSE)
-default_cores <- if (is.na(detected_cores)) {
-  1L
-} else {
-  max(1L, min(4L, as.integer(detected_cores)))
-}
-example_n_obs <- .example_positive_integer("RPBNB_N_OBS", 500L)
-example_draws <- .example_positive_integer("RPBNB_DRAWS", 20L)
-example_cores <- .example_positive_integer("RPBNB_N_CORES", default_cores)
+
+# ---- Settings ---------------------------------------------------------------
+n_obs <- 500L
+draws <- 20L
+n_cores <- parallel::detectCores(logical = FALSE)
+if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
 data <- read.csv(file.path("data", "rwm1984_bnb.csv"))
-example_n_obs <- .example_observation_count(example_n_obs, nrow(data))
-data <- data[seq_len(example_n_obs), , drop = FALSE]
+data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]
 cat("=== RP-BNB (different formulas, Frank copula) on rwm1984 health counts ===\n")
 cat("Observations :", nrow(data), "\n")
-cat("Draws        :", example_draws, "\n")
-cat("Cores asked  :", example_cores, "\n")
+cat("Draws        :", draws, "\n")
+cat("Cores asked  :", n_cores, "\n")
 
 # ---- 2. Model specification -------------------------------------------------
 # The two equations carry DIFFERENT covariates. Random coefficients sit on
@@ -113,15 +53,28 @@ t_fit <- system.time(
     random_1   = "hhninc",   # random slope on hhninc (eq 1), continuous, in f1
     random_2   = "educ",     # random slope on educ   (eq 2), continuous, in f2
     dependence = copula("frank"),   # try "frank" or "kimeldorf"
-    draws      = example_draws,
+    draws      = draws,
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
-      n_cores     = example_cores
+      n_cores     = n_cores
     )
   )
 )[["elapsed"]]
-.example_fit_diagnostics(fit, t_fit)
+cat(sprintf("\nEstimation finished in %.2f s\n", t_fit))
+cat(sprintf(
+  "TMB threads: requested=%d, realized=%d\n",
+  fit$parallel$requested, fit$parallel$realized
+))
+cat(sprintf(
+  "Optimizer: code=%d, message=%s\n",
+  fit$optimizer$convergence, fit$optimizer$message
+))
+cat(
+  "sdreport positive-definite Hessian:",
+  if (isTRUE(fit$sdreport$pdHess)) "yes" else "no",
+  "\n"
+)
 
 # ---- 3. Model summary -------------------------------------------------------
 sep(); cat("MODEL SUMMARY\n"); sep()
