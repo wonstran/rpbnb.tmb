@@ -257,6 +257,23 @@ test_that("demo scripts use a bounded physical-core count", {
   for (demo_path in demo_paths) {
     demo <- paste(readLines(demo_path, warn = FALSE), collapse = "\n")
     expect_match(demo, "detectCores(logical = FALSE)", fixed = TRUE)
-    expect_match(demo, "n_cores     = demo_cores", fixed = TRUE)
+    expect_match(demo, "max(1L, min(4L", fixed = TRUE)
   }
+
+  copula_demo <- paste(
+    readLines(demo_paths[[1L]], warn = FALSE),
+    collapse = "\n"
+  )
+  expect_match(
+    copula_demo,
+    '.example_positive_integer("RPBNB_N_CORES", default_cores)',
+    fixed = TRUE
+  )
+  expect_match(copula_demo, "n_cores     = example_cores", fixed = TRUE)
+
+  famoye_demo <- paste(
+    readLines(demo_paths[[2L]], warn = FALSE),
+    collapse = "\n"
+  )
+  expect_match(famoye_demo, "n_cores     = demo_cores", fixed = TRUE)
 })
