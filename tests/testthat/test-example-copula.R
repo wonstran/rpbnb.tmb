@@ -1,9 +1,17 @@
-copula_example_text <- function() {
-  path <- testthat::test_path(
+copula_example_path <- function() {
+  testthat::test_path(
     "..", "..", "inst", "fit_rpbnb_diff_copula.R"
   )
+}
+
+copula_example_text <- function() {
+  path <- copula_example_path()
   paste(readLines(path, warn = FALSE), collapse = "\n")
 }
+
+test_that("copula example parses", {
+  expect_no_error(parse(copula_example_path()))
+})
 
 test_that("copula example has three editable workload settings", {
   script <- copula_example_text()
