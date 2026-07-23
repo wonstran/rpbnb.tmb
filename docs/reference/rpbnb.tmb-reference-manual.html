@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rpbnb.tmb Reference Manual</title>
+<style>
+  @page { size: Letter; margin: 0.68in 0.72in 0.62in; }
+  :root { --ink: #1a1a1a; --muted: #555; --rule: #8b8b8b; --wash: #f1f1f1; }
+  * { box-sizing: border-box; }
+  body { color: var(--ink); background: #fff; font-family: Arial, Helvetica, sans-serif;
+         font-size: 10.2pt; line-height: 1.42; margin: 0 auto; max-width: 8.5in; }
+  header { border-bottom: 2px solid var(--ink); padding: 0 0 12pt; margin: 0 0 18pt; }
+  h1 { font-size: 24pt; line-height: 1.05; letter-spacing: -0.03em; margin: 0 0 5pt; }
+  h2 { border-top: 1px solid var(--rule); font-size: 17pt; line-height: 1.15;
+       margin: 24pt 0 10pt; padding-top: 8pt; }
+  h3 { font-size: 12.5pt; margin: 14pt 0 5pt; }
+  h4 { font-size: 10.5pt; margin: 12pt 0 3pt; text-transform: uppercase; letter-spacing: .05em; }
+  p { margin: 0 0 8pt; }
+  .subtitle { color: var(--muted); font-size: 12pt; margin: 0; }
+  .meta { display: grid; grid-template-columns: 1.2in 1fr; gap: 2pt 10pt; margin: 12pt 0 0; }
+  .meta dt { font-weight: 700; } .meta dd { margin: 0; }
+  nav { background: var(--wash); border: 1px solid #d1d1d1; margin: 0 0 18pt; padding: 12pt 16pt; }
+  nav h2 { border: 0; font-size: 14pt; margin: 0 0 6pt; padding: 0; }
+  nav ol { columns: 2; column-gap: 32pt; margin: 0; padding-left: 18pt; }
+  nav li { break-inside: avoid; margin: 2pt 0; }
+  a { color: inherit; text-decoration: underline; text-decoration-color: #777; text-underline-offset: 1pt; }
+  .entry { break-inside: avoid; page-break-inside: avoid; }
+  .entry > h2 { break-after: avoid; page-break-after: avoid; }
+  pre { background: #f6f6f6; border-left: 3px solid #777; font-family: "Cascadia Mono", Consolas, monospace;
+        font-size: 8.4pt; line-height: 1.35; margin: 5pt 0 10pt; overflow-wrap: anywhere; padding: 8pt 10pt;
+        tab-size: 2; white-space: pre-wrap; }
+  code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .93em; }
+  dl { margin: 4pt 0 10pt; } dt { font-family: "Cascadia Mono", Consolas, monospace; font-weight: 700; }
+  dd { margin: 1pt 0 7pt 20pt; }
+  ul { margin: 3pt 0 9pt; padding-left: 20pt; } li { margin: 2pt 0; }
+  .note { background: #f3f3f3; border-left: 3px solid #555; margin: 9pt 0; padding: 7pt 10pt; }
+  .small { color: var(--muted); font-size: 9pt; }
+  .back { font-size: 8.5pt; text-align: right; }
+  .footer { display: none; }
+  @media print {
+    body { max-width: none; }
+    nav { break-after: page; page-break-after: always; }
+    .footer { bottom: 0.18in; color: var(--muted); display: block; font-size: 8pt; left: 0; position: fixed; right: 0; text-align: center; }
+    a { color: inherit; }
+  }
+</style>
+</head>
+<body id="top">
+<header>
+  <h1>Package <code>rpbnb.tmb</code></h1>
+  <p class="subtitle">Random-Parameter Bivariate Negative Binomial Regression with Template Model Builder</p>
+  <dl class="meta">
+    <dt>Version</dt><dd>0.1.0</dd>
+    <dt>Author and maintainer</dt><dd>Zhenyu Wang &lt;wonstran@hotmail.com&gt;</dd>
+    <dt>Depends</dt><dd>R (&gt;= 4.1)</dd>
+    <dt>Imports</dt><dd>stats, TMB, numDeriv</dd>
+    <dt>License</dt><dd>MIT</dd>
+  </dl>
+</header>
+
+<nav aria-label="Contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#package-overview">rpbnb.tmb-package</a></li>
+    <li><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a></li>
+    <li><a href="#simulate-rpbnb-tmb">simulate_rpbnb_tmb</a></li>
+    <li><a href="#rpbnb-tmb-control">rpbnb_tmb_control</a></li>
+    <li><a href="#copula">copula</a></li>
+    <li><a href="#marginal-effects">rpbnb_tmb_marginal_effects</a></li>
+    <li><a href="#elasticities">rpbnb_tmb_elasticities</a></li>
+    <li><a href="#fit-methods">Methods for rpbnb_tmb_fit</a></li>
+    <li><a href="#model-notes">Model, dependence, and random-coefficient notes</a></li>
+    <li><a href="#references">References and citation</a></li>
+    <li><a href="#license">License</a></li>
+  </ol>
+</nav>
+
+<main>
+<section class="entry" id="package-overview">
+  <h2>Random-Parameter Bivariate Negative Binomial Regression</h2>
+  <h3>Description</h3>
+  <p><code>rpbnb.tmb</code> estimates bivariate count-regression models with negative-binomial margins, equation-specific covariates, optional random coefficients, and simulated likelihood integration based on randomized Halton draws. Estimation uses Template Model Builder (TMB) for automatic differentiation and <code>nlminb()</code> for optimization.</p>
+  <h3>Details</h3>
+  <p>The two response equations may use different formulas. Dependence can be specified as Famoye/Sarmanov, independence, or a discrete copula. The fitting function returns an <code>rpbnb_tmb_fit</code> object with estimated coefficients, covariance information, TMB diagnostics, and the requested and realized thread counts.</p>
+  <h3>Examples</h3>
+  <pre><code class="example">library(rpbnb.tmb)
+
+sim &lt;- simulate_rpbnb_tmb(n = 20,
+  beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
+  beta2 = c("(Intercept)" = 0.1, x1 = -0.3),
+  dispersion = c(m1 = 0.4, m2 = 0.5), seed = 1)
+ctrl &lt;- rpbnb_tmb_control(n_cores = 1L)
+
+# Not run during manual build:
+# fit &lt;- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = sim$data,
+#   draws = 20L, control = ctrl)
+# summary(fit)</code></pre>
+  <p class="back"><a href="#top">Back to contents</a></p>
+</section>
+
+<section class="entry" id="fit-rpbnb-tmb">
+  <h2>Fit a bivariate random-parameter negative binomial model</h2>
+  <h3>Description</h3>
+  <p>Fits a maximum simulated likelihood model with two negative-binomial count margins. Random-coefficient distributions are integrated over Halton draws, while TMB supplies objective and derivative calculations.</p>
+  <h3>Usage</h3>
+  <pre><code>fit_rpbnb_tmb(formula_1, formula_2, data,
+              random_1 = NULL, random_2 = NULL,
+              draws = 400L, seed = 1234L, start = NULL,
+              dependence = "famoye",
+              control = rpbnb_tmb_control(),
+              poisson_1 = FALSE, poisson_2 = FALSE)</code></pre>
+  <h3>Arguments</h3>
+  <dl>
+    <dt>formula_1, formula_2</dt><dd>Model formulas for the first and second count outcomes.</dd>
+    <dt>data</dt><dd>A data frame containing the outcomes and all variables named by both formulas. Incomplete rows for the modeled variables are omitted.</dd>
+    <dt>random_1, random_2</dt><dd>Random-coefficient specifications for each equation. Use <code>NULL</code> for fixed coefficients, an unnamed character vector for Normal random coefficients, or a named list of distribution specifications. Supported distributions are <code>"normal"</code>, <code>"lognormal"</code>, <code>"uniform"</code>, and <code>"triangular"</code>.</dd>
+    <dt>draws</dt><dd>Number of randomized Halton simulation draws. The default is <code>400L</code>.</dd>
+    <dt>seed</dt><dd>Integer seed used while generating the Halton randomization.</dd>
+    <dt>start</dt><dd>Optional named or positional starting vector. Names must match the model's parameter names when supplied.</dd>
+    <dt>dependence</dt><dd><code>"famoye"</code>, <code>"independence"</code>, or an object returned by <code>copula()</code>.</dd>
+    <dt>control</dt><dd>A control object from <code>rpbnb_tmb_control()</code>.</dd>
+    <dt>poisson_1, poisson_2</dt><dd>Logical flags fixing the selected margin at its Poisson-limit dispersion.</dd>
+  </dl>
+  <h3>Value</h3>
+  <p>An object of class <code>rpbnb_tmb_fit</code>. Important components include <code>coef</code>, <code>vcov</code>, <code>se</code>, <code>logLik</code>, <code>nobs</code>, <code>npar</code>, <code>m1</code>, <code>m2</code>, <code>optimizer</code>, <code>sdreport</code>, and <code>parallel</code>. The <code>parallel</code> component records the requested and realized TMB thread counts.</p>
+  <h3>Details</h3>
+  <p>For copula dependence, Poisson-limit margins are not supported. The fitting routine checks the random-coefficient names against their equation's model matrix and validates the allowed dependence specification before constructing the TMB objective.</p>
+  <h3>Examples</h3>
+  <pre><code class="example">sim &lt;- simulate_rpbnb_tmb(n = 20,
+  beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
+  beta2 = c("(Intercept)" = 0.1, x1 = -0.3),
+  dispersion = c(m1 = 0.4, m2 = 0.5), seed = 1)
+
+# Not run during manual build:
+# fit &lt;- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = sim$data,
+#   random_1 = "x1", draws = 20L,
+#   dependence = "famoye",
+#   control = rpbnb_tmb_control(n_cores = 1L))</code></pre>
+  <h3>See Also</h3><p><a href="#rpbnb-tmb-control">rpbnb_tmb_control</a>, <a href="#copula">copula</a>, <a href="#fit-methods">methods for fitted objects</a>.</p>
+</section>
+
+<section class="entry" id="simulate-rpbnb-tmb">
+  <h2>Simulate bivariate negative-binomial data</h2>
+  <h3>Description</h3><p>Generates bivariate count data from a random-parameter negative-binomial process with equation-specific coefficients and a selected dependence mechanism.</p>
+  <h3>Usage</h3>
+  <pre><code>simulate_rpbnb_tmb(n, beta1, beta2,
+                   random_1 = NULL, random_2 = NULL,
+                   dispersion = c(m1 = 0.5, m2 = 0.5),
+                   dependence = "famoye", lambda = 0,
+                   covariates = NULL, seed = NULL)</code></pre>
+  <h3>Arguments</h3>
+  <dl>
+    <dt>n</dt><dd>Number of observations to generate.</dd>
+    <dt>beta1, beta2</dt><dd>Named coefficient vectors for the two equations. Each must include <code>"(Intercept)"</code>.</dd>
+    <dt>random_1, random_2</dt><dd>Random-coefficient specifications in the same format accepted by <code>fit_rpbnb_tmb()</code>. Simulation requires a finite positive scale for each requested random coefficient.</dd>
+    <dt>dispersion</dt><dd>Named vector with positive <code>m1</code> and <code>m2</code> values.</dd>
+    <dt>dependence</dt><dd><code>"famoye"</code>, <code>"independence"</code>, or a <code>copula()</code> object.</dd>
+    <dt>lambda</dt><dd>Famoye dependence parameter. The default zero produces independent draws.</dd>
+    <dt>covariates</dt><dd>Optional data frame. When omitted, required covariates are generated from standard Normal distributions.</dd>
+    <dt>seed</dt><dd>Optional integer seed.</dd>
+  </dl>
+  <h3>Value</h3><p>A list containing <code>data</code>, <code>truth</code>, realized coefficient matrices, fitted conditional means, and simulation settings.</p>
+  <h3>Details</h3><p>For the Famoye model, a nonzero <code>lambda</code> must lie inside the model's admissible bounds. Copula simulation uses the selected discrete CDF rectangle construction.</p>
+  <h3>Examples</h3>
+  <pre><code class="example">sim &lt;- simulate_rpbnb_tmb(n = 20,
+  beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
+  beta2 = c("(Intercept)" = 0.1, x1 = -0.3),
+  dispersion = c(m1 = 0.4, m2 = 0.5),
+  dependence = "independence", seed = 42)
+head(sim$data)</code></pre>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a> and <a href="#copula">copula</a>.</p>
+</section>
+
+<section class="entry" id="rpbnb-tmb-control">
+  <h2>Control parameters for rpbnb.tmb estimation</h2>
+  <h3>Description</h3><p>Creates a validated control object for optimization, TMB verbosity, OpenMP thread requests, and Halton-draw burn-in.</p>
+  <h3>Usage</h3>
+  <pre><code>rpbnb_tmb_control(iterlim = 500L, reltol = 1e-8,
+                  print_level = 0L, n_cores = 1L,
+                  halton_burn = 300L)</code></pre>
+  <h3>Arguments</h3>
+  <dl>
+    <dt>iterlim</dt><dd>Maximum optimizer iterations.</dd>
+    <dt>reltol</dt><dd>Relative convergence tolerance passed to <code>nlminb()</code>.</dd>
+    <dt>print_level</dt><dd>Nonnegative verbosity level used by the fitting process.</dd>
+    <dt>n_cores</dt><dd>One whole-number TMB/OpenMP thread request. The installed TMB DLL can realize fewer threads; inspect <code>fit$parallel</code> after fitting.</dd>
+    <dt>halton_burn</dt><dd>Number of leading Halton points discarded before simulation draws are used.</dd>
+  </dl>
+  <h3>Value</h3><p>An object of class <code>rpbnb_tmb_control</code>.</p>
+  <h3>Examples</h3><pre><code class="example">ctrl &lt;- rpbnb_tmb_control(iterlim = 300L, n_cores = 1L)
+ctrl$n_cores</code></pre>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>.</p>
+</section>
+
+<section class="entry" id="copula">
+  <h2>Specify a dependence copula</h2>
+  <h3>Description</h3><p>Constructs a copula specification for use as the <code>dependence</code> argument of <code>fit_rpbnb_tmb()</code> or <code>simulate_rpbnb_tmb()</code>.</p>
+  <h3>Usage</h3><pre><code>copula(family, par = NULL)</code></pre>
+  <h3>Arguments</h3>
+  <dl>
+    <dt>family</dt><dd>One of <code>"frank"</code>, <code>"normal"</code>, or <code>"kimeldorf"</code>.</dd>
+    <dt>par</dt><dd>Optional fixed family parameter. For the Normal family, <code>|rho| &lt; 1</code>; for the Kimeldorf/Clayton family, <code>theta &gt; 0</code>; and for Frank, the parameter must be finite.</dd>
+  </dl>
+  <h3>Value</h3><p>An object of class <code>rpbnb_copula</code> containing the selected family and optional parameter.</p>
+  <h3>Details</h3><p>With an unspecified parameter, the dependence parameter is estimated by the fitting routine. Use <code>"independence"</code> rather than a copula object when an independent model is required.</p>
+  <h3>Examples</h3><pre><code class="example">copula("frank")
+copula("normal", par = 0.3)
+copula("kimeldorf", par = 1.2)</code></pre>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a> and <a href="#model-notes">model notes</a>.</p>
+</section>
+
+<section class="entry" id="marginal-effects">
+  <h2>Marginal effects for a fitted rpbnb.tmb model</h2>
+  <h3>Description</h3><p>Computes average marginal effects (AME) or marginal effects at the mean (MEM). Continuous variables use derivatives of the integrated conditional mean; binary variables use discrete differences.</p>
+  <h3>Usage</h3>
+  <pre><code>rpbnb_tmb_marginal_effects(fit, which = c("y1", "y2", "both"),
+                            type = c("AME", "MEM"), vars = NULL,
+                            include_intercept = FALSE, digits = 4L, ...)</code></pre>
+  <h3>Arguments</h3><dl><dt>fit</dt><dd>An <code>rpbnb_tmb_fit</code> object.</dd><dt>which</dt><dd>Margin <code>"y1"</code>, <code>"y2"</code>, or <code>"both"</code>.</dd><dt>type</dt><dd><code>"AME"</code> or <code>"MEM"</code>.</dd><dt>vars</dt><dd>Optional variable names to retain.</dd><dt>include_intercept</dt><dd>Whether to include the intercept row.</dd><dt>digits</dt><dd>Printed decimal places.</dd></dl>
+  <h3>Value</h3><p>A data frame for one margin or a named list of two data frames when <code>which = "both"</code>.</p>
+  <h3>Details</h3><p>When a coefficient is random, the computation uses the model's stored simulation draws to integrate the conditional mean and derivative.</p>
+  <h3>Examples</h3><pre><code class="example"># Not run during manual build:
+# rpbnb_tmb_marginal_effects(fit, which = "both", type = "AME")</code></pre>
+  <h3>See Also</h3><p><a href="#elasticities">rpbnb_tmb_elasticities</a>.</p>
+</section>
+
+<section class="entry" id="elasticities">
+  <h2>Elasticities for a fitted rpbnb.tmb model</h2>
+  <h3>Description</h3><p>Computes continuous elasticities and binary semi-elasticities from the same Monte Carlo integrated means used for marginal effects.</p>
+  <h3>Usage</h3>
+  <pre><code>rpbnb_tmb_elasticities(fit, which = c("y1", "y2", "both"),
+                        type = c("AME", "MEM"), vars = NULL,
+                        include_intercept = FALSE, digits = 4L, ...)</code></pre>
+  <h3>Arguments</h3><p>The arguments have the same meaning as for <a href="#marginal-effects">rpbnb_tmb_marginal_effects</a>.</p>
+  <h3>Value</h3><p>A data frame for one margin or a named list of two data frames for both margins.</p>
+  <h3>Details</h3><p>For continuous variables, the reported quantity is <code>x / E[Y] * dE[Y]/dx</code>. For binary variables, the reported semi-elasticity is <code>E[Y | x = 1] / E[Y | x = 0] - 1</code>.</p>
+  <h3>Examples</h3><pre><code class="example"># Not run during manual build:
+# rpbnb_tmb_elasticities(fit, which = "y1", type = "AME")</code></pre>
+  <h3>See Also</h3><p><a href="#marginal-effects">rpbnb_tmb_marginal_effects</a>.</p>
+</section>
+
+<section class="entry" id="fit-methods">
+  <h2>Methods for rpbnb_tmb_fit objects</h2>
+  <h3>Description</h3><p>Standard methods expose fitted-model quantities and concise reporting for objects returned by <code>fit_rpbnb_tmb()</code>.</p>
+  <h3>Usage</h3>
+  <pre><code>print(x, ...)
+summary(object, digits = 4L, ...)
+coef(object, ...)
+vcov(object, ...)
+logLik(object, ...)
+AIC(object, ...)
+BIC(object, ...)
+predict(object, ...)</code></pre>
+  <h3>Details</h3>
+  <ul>
+    <li><code>print()</code> reports the likelihood, observation and parameter counts, realized TMB threads, dependence specification, and rounded coefficients.</li>
+    <li><code>summary()</code> prints equation coefficients, random-coefficient scale summaries, dispersions, and dependence information when available from <code>sdreport</code>.</li>
+    <li><code>coef()</code> returns the named parameter vector and <code>vcov()</code> returns the fitted covariance matrix.</li>
+    <li><code>logLik()</code> attaches degrees of freedom and observation count; <code>AIC()</code> and <code>BIC()</code> use the stored log likelihood and parameter count.</li>
+    <li><code>predict()</code> currently returns a coefficient-based object of class <code>rpbnb_tmb_pred</code>; it does not calculate new-data fitted means.</li>
+  </ul>
+  <h3>Examples</h3><pre><code class="example"># Not run during manual build:
+# coef(fit)
+# vcov(fit)
+# logLik(fit)
+# AIC(fit)
+# BIC(fit)</code></pre>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>.</p>
+</section>
+
+<section class="entry" id="model-notes">
+  <h2>Model, dependence, and random-coefficient notes</h2>
+  <h3>Negative-binomial margins</h3><p>Each equation has its own mean specification and NB2 dispersion parameter. Set <code>poisson_1</code> or <code>poisson_2</code> in <code>fit_rpbnb_tmb()</code> only for a requested Poisson-limit margin.</p>
+  <h3>Dependence choices</h3><p><code>"famoye"</code> estimates a Famoye/Sarmanov dependence parameter subject to admissible bounds. <code>"independence"</code> omits the estimated dependence parameter. Copula specifications use Frank, Gaussian, or Kimeldorf/Clayton discrete-copula dependence.</p>
+  <h3>Random coefficients</h3><p>Random coefficients are equation-specific and their variable names must occur in the corresponding formula. An unnamed character vector requests Normal distributions. A named list can select Normal, lognormal, uniform, or triangular distributions; a lognormal specification may include <code>sign = -1</code> or <code>sign = 1</code>.</p>
+  <div class="note"><strong>Threading note.</strong> <code>n_cores</code> requests an OpenMP thread count for the loaded TMB DLL. The realized count can be lower on a given build or platform. Inspect <code>fit$parallel$requested</code> and <code>fit$parallel$realized</code> after fitting.</div>
+</section>
+
+<section class="entry" id="references">
+  <h2>References and citation</h2>
+  <p>The implementation uses Template Model Builder for automatic differentiation and Laplace-style reporting infrastructure. Cite the package as software using its package name, version, author, and repository URL:</p>
+  <pre><code>Wang, Z. (2026). rpbnb.tmb: Random-Parameter Bivariate Negative
+Binomial Regression with Template Model Builder. R package version 0.1.0.</code></pre>
+  <p>For TMB methodology, see Kristensen, K., Nielsen, A., Berg, C. W., Skaug, H., and Bell, B. M. (2016). TMB: Automatic Differentiation and Laplace Approximation. <em>Journal of Statistical Software</em>, 70(5), 1-21.</p>
+</section>
+
+<section class="entry" id="license">
+  <h2>License</h2>
+  <p>MIT License. Copyright (c) 2026 Zhenyu Wang. Permission is granted, free of charge, to use, copy, modify, merge, publish, distribute, sublicense, and sell copies of the software, subject to inclusion of the copyright and permission notice. The software is provided without warranty.</p>
+</section>
+</main>
+<div class="footer">rpbnb.tmb Reference Manual</div>
+</body>
+</html>
