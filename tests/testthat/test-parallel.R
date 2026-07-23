@@ -249,21 +249,22 @@ test_that("parallel benchmark reports timing and numerical agreement", {
   expect_match(benchmark, "gradient_diff", fixed = TRUE)
 })
 
-test_that("demo scripts use a bounded physical-core count", {
+test_that("demo scripts use bounded physical-core counts", {
   demo_paths <- testthat::test_path(
     "..", "..", "inst",
     c("fit_rpbnb_diff_copula.R", "fit_rpbnb_diff_famoye.R")
   )
-  for (demo_path in demo_paths) {
-    demo <- paste(readLines(demo_path, warn = FALSE), collapse = "\n")
-    expect_match(demo, "detectCores(logical = FALSE)", fixed = TRUE)
-    expect_match(demo, "max(1L, min(4L", fixed = TRUE)
-  }
-
   copula_demo <- paste(
     readLines(demo_paths[[1L]], warn = FALSE),
     collapse = "\n"
   )
+  famoye_demo <- paste(
+    readLines(demo_paths[[2L]], warn = FALSE),
+    collapse = "\n"
+  )
+
+  expect_match(copula_demo, "detectCores(logical = FALSE)", fixed = TRUE)
+  expect_match(copula_demo, "max(1L, min(4L", fixed = TRUE)
   expect_match(
     copula_demo,
     '.example_positive_integer("RPBNB_N_CORES", default_cores)',
@@ -271,9 +272,15 @@ test_that("demo scripts use a bounded physical-core count", {
   )
   expect_match(copula_demo, "n_cores     = example_cores", fixed = TRUE)
 
-  famoye_demo <- paste(
-    readLines(demo_paths[[2L]], warn = FALSE),
-    collapse = "\n"
+  expect_match(famoye_demo, "detectCores(logical = FALSE)", fixed = TRUE)
+  expect_match(famoye_demo, "max(1L, min(2L", fixed = TRUE)
+  expect_match(
+    famoye_demo,
+    '"RPBNB_FAMOYE_N_CORES",\\s*famoye_default_cores'
   )
-  expect_match(famoye_demo, "n_cores     = demo_cores", fixed = TRUE)
+  expect_match(
+    famoye_demo,
+    "n_cores     = famoye_example_cores",
+    fixed = TRUE
+  )
 })
