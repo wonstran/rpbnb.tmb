@@ -26,6 +26,7 @@ fit_once <- function(n_cores) {
     dependence = copula("frank"),
     draws = 20L,
     seed = 20240712L,
+    keep = "full",
     control = rpbnb_tmb_control(iterlim = 100L, n_cores = n_cores)
   )
 }

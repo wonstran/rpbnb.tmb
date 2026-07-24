@@ -9,7 +9,8 @@
 #' Configure the TMB model DLL's OpenMP thread count
 #' @keywords internal
 #' @noRd
-.configure_tmb_threads <- function(n_cores, DLL = "rpbnb.tmb") {
+.configure_tmb_threads <- function(n_cores, max_threads = 4L,
+                                   DLL = "rpbnb.tmb") {
   supported <- suppressWarnings(TMB::openmp(max = TRUE, DLL = DLL))
   supported <- as.integer(supported[[1L]])
   if (length(supported) != 1L || is.na(supported) || supported < 1L) {
@@ -17,10 +18,19 @@
   }
 
   requested <- as.integer(n_cores)
-  realized <- min(requested, supported)
+  policy_capped <- min(requested, as.integer(max_threads))
+  realized <- min(policy_capped, supported)
   TMB::openmp(n = realized, DLL = DLL)
 
-  if (realized < requested) {
+  if (policy_capped < requested) {
+    warning(
+      sprintf(
+        "Requested %d TMB threads; using %d because max_threads = %d.",
+        requested, realized, as.integer(max_threads)
+      ),
+      call. = FALSE
+    )
+  } else if (realized < requested) {
     warning(
       sprintf("Requested %d TMB threads; using %d supported thread%s.",
               requested, realized, if (realized == 1L) "" else "s"),
@@ -36,8 +46,11 @@
 #' @noRd
 .make_rpbnb_tmb_object <- function(data, parameters, map = NULL,
                                    random = NULL, silent = TRUE,
-                                   n_cores = 1L, DLL = "rpbnb.tmb") {
-  realized <- .configure_tmb_threads(n_cores, DLL = DLL)
+                                   n_cores = 1L, max_threads = 4L,
+                                   DLL = "rpbnb.tmb") {
+  realized <- .configure_tmb_threads(
+    n_cores, max_threads = max_threads, DLL = DLL
+  )
   obj <- TMB::MakeADFun(
     data = data,
     parameters = parameters,
@@ -47,6 +60,30 @@
     silent = silent
   )
   list(obj = obj, n_cores = realized)
+}
+
+#' Reject automatic-differentiation workloads above an explicit budget
+#' @keywords internal
+#' @noRd
+.check_tmb_workload <- function(n, draws, family_code, max_workload) {
+  if (is.infinite(max_workload)) return(invisible(0))
+  family_weight <- if (family_code %in% c(-1L, 0L)) 1 else 4
+  workload <- as.double(n) * as.double(draws) * family_weight
+  if (!is.finite(workload) || workload > max_workload) {
+    stop(
+      sprintf(
+        paste0(
+          "Weighted TMB workload is %s, above max_workload = %s. ",
+          "Reduce observations or draws, or explicitly increase ",
+          "control$max_workload (Inf disables this guard)."
+        ),
+        format(workload, scientific = FALSE, trim = TRUE),
+        format(max_workload, scientific = FALSE, trim = TRUE)
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(workload)
 }
 
 #' Build the TMB data list for the RP-BNB model

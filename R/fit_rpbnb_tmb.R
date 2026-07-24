@@ -16,9 +16,18 @@
 #' @param dependence Dependence structure: "famoye", "independence", or a
 #'   \code{copula()} object for copula dependence.
 #' @param control An object from \code{rpbnb_tmb_control()}.
+#' @param inference Inference storage: \code{"full"} for a full covariance,
+#'   \code{"diag"} for standard errors only, or \code{"none"} to skip Hessian
+#'   calculations. In diagonal mode, \code{vcov()} returns \code{NA} for
+#'   covariance cross-terms.
+#' @param keep Retained fit state: \code{"postfit"} keeps data needed for
+#'   marginal effects, \code{"compact"} keeps estimates only, and
+#'   \code{"full"} also retains the TMB objective and responses. Low-level
+#'   diagnostics that access \code{fit$obj} require \code{"full"}.
 #' @param poisson_1,poisson_2 Fit the corresponding margin at its exact Poisson
 #'   limit (NB2 dispersion m = 0, held fixed).
-#' @return An object of class \code{rpbnb_tmb_fit}.
+#' @return An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
+#'   is a compact package-owned summary and does not retain a second TMB tape.
 #' @export
 #' @examples
 #' \dontrun{
@@ -34,10 +43,21 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
                           draws = 400L, seed = 1234L, start = NULL,
                           dependence = "famoye",
                           control = rpbnb_tmb_control(),
+                          inference = c("full", "diag", "none"),
+                          keep = c("postfit", "compact", "full"),
                           poisson_1 = FALSE, poisson_2 = FALSE) {
   stopifnot(is.data.frame(data))
+  inference <- match.arg(inference)
+  keep <- match.arg(keep)
   .chk_poisson_flag(poisson_1, "poisson_1")
   .chk_poisson_flag(poisson_2, "poisson_2")
+  if (length(draws) != 1L || !is.numeric(draws) || is.na(draws) ||
+      !is.finite(draws) || draws < 1 || draws != floor(draws) ||
+      draws > .Machine$integer.max) {
+    stop("draws must be one whole number greater than or equal to 1.",
+         call. = FALSE)
+  }
+  draws <- as.integer(draws)
 
   # Resolve dependence
   if (inherits(dependence, "rpbnb_copula")) {
@@ -74,6 +94,13 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   q1 <- length(rand_idx1); q2 <- length(rand_idx2)
   k1 <- ncol(X1); k2 <- ncol(X2)
   total_rand <- q1 + q2
+  effective_draws <- if (total_rand > 0L) draws else 1L
+  .check_tmb_workload(
+    n = n,
+    draws = effective_draws,
+    family_code = family_code,
+    max_workload = control$max_workload
+  )
 
   # Generate Halton draws
   set.seed(seed)
@@ -180,7 +207,8 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     ),
     map = if (length(map) > 0) map else NULL,
     silent = control$print_level == 0L,
-    n_cores = control$n_cores
+    n_cores = control$n_cores,
+    max_threads = control$max_threads
   )
   obj <- configured$obj
 
@@ -201,32 +229,24 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   coef_vec <- obj$env$last.par.best[seq_along(par_names)]
   names(coef_vec) <- par_names
 
-  # sdreport: parameter SEs from fixed-effects summary
-  sdr <- TMB::sdreport(obj)
-  sdr_sum <- summary(sdr, "fixed")
-  se_vec <- sdr_sum[, "Std. Error"]
-  names(se_vec) <- par_names
-
   # Construct result
   value <- opt$objective
   ll_hat <- -value  # nll -> logLik
 
-  # Extract natural-scale parameters
-  rep <- sdr$value
-  # m1 = exp(log_m1) etc. via ADREPORT
-  m1_hat <- as.numeric(rep["m1"])
-  m2_hat <- as.numeric(rep["m2"])
-
-  # Build full vcov matrix matching par_names. Use cov.fixed from the sdreport
-  # directly (vcov.sdreport() can fail on some TMB builds; cov.fixed is the raw
-  # free-parameter covariance matrix).
-  vc <- matrix(NA_real_, npar, npar, dimnames = list(par_names, par_names))
-  if (!is.null(sdr$cov.fixed)) {
-    n_free <- ncol(sdr$cov.fixed)
-    if (n_free <= npar) {
-      vc[seq_len(n_free), seq_len(n_free)] <- sdr$cov.fixed
-    }
-  }
+  free <- !(par_names %in% fixed_names)
+  inference_result <- .rpbnb_inference(
+    obj = obj,
+    par = opt$par,
+    coef = coef_vec,
+    par_names = par_names,
+    free = free,
+    mode = inference,
+    family_code = family_code,
+    lamLo = lamLo,
+    lamHi = lamHi
+  )
+  m1_hat <- as.numeric(inference_result$report["m1"])
+  m2_hat <- as.numeric(inference_result$report["m2"])
 
   rp_meta <- list(
     Z1 = Z1, Z2 = Z2,
@@ -236,22 +256,27 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
 
   result <- list(
     coef = coef_vec,
-    vcov = vc,
-    se = se_vec,
+    vcov = inference_result$vcov,
+    vcov_diag = inference_result$vcov_diag,
+    se = inference_result$se,
     logLik = ll_hat,
     nobs = n,
     npar = npar,
     m1 = m1_hat,
     m2 = m2_hat,
     dependence = dependence,
-    X1 = X1, X2 = X2,
-    Y1 = Y1, Y2 = Y2,
+    X1 = if (keep == "compact") NULL else X1,
+    X2 = if (keep == "compact") NULL else X2,
+    Y1 = if (keep == "full") Y1 else NULL,
+    Y2 = if (keep == "full") Y2 else NULL,
     rand_idx1 = rand_idx1,
     rand_idx2 = rand_idx2,
-    rp_meta = rp_meta,
+    rp_meta = if (keep == "compact") NULL else rp_meta,
     optimizer = opt,
-    sdreport = sdr,
-    obj = obj,
+    sdreport = inference_result$sdreport,
+    obj = if (keep == "full") obj else NULL,
+    inference = inference,
+    keep = keep,
     parallel = list(requested = control$n_cores,
                     realized = configured$n_cores),
     call = match.call()

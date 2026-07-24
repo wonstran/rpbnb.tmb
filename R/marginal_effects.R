@@ -69,6 +69,32 @@ rpbnb_tmb_elasticities <- function(fit,
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+#' Mean of exponentiated predictors accumulated over random draws
+#' @keywords internal
+#' @noRd
+.draw_mean_exp <- function(xb, xr, dev) {
+  total <- numeric(length(xb))
+  has_random <- !is.null(xr) && ncol(xr) > 0L
+  for (r in seq_len(nrow(dev))) {
+    eta <- xb + if (has_random) as.vector(xr %*% dev[r, ]) else 0
+    total <- total + exp(pmin(pmax(eta, -700), 700))
+  }
+  total / nrow(dev)
+}
+
+#' Weighted mean of exponentiated predictors over random draws
+#' @keywords internal
+#' @noRd
+.draw_mean_weighted_exp <- function(xb, xr, dev, weights) {
+  total <- numeric(length(xb))
+  for (r in seq_len(nrow(dev))) {
+    eta <- xb + as.vector(xr %*% dev[r, ])
+    total <- total +
+      weights[r] * exp(pmin(pmax(eta, -700), 700))
+  }
+  total / nrow(dev)
+}
+
 #' Compute marginal effects for one equation
 #' @keywords internal
 #' @noRd
@@ -92,6 +118,12 @@ rpbnb_tmb_elasticities <- function(fit,
 
   # ---- Extract design & metadata ----
   X     <- if (eq == 1L) fit$X1 else fit$X2
+  if (is.null(X) || is.null(fit$rp_meta)) {
+    stop(
+      'Marginal effects require a fit created with keep = "postfit" or "full".',
+      call. = FALSE
+    )
+  }
   cn    <- colnames(X)
   n     <- nrow(X)
   coef_prefix <- paste0("b", eq, ":")
@@ -117,7 +149,6 @@ rpbnb_tmb_elasticities <- function(fit,
   # ---- Design for AME / MEM ----
   X_use <- if (type == "MEM") matrix(colMeans(X), 1,
                                      dimnames = list(NULL, cn)) else X
-  xu    <- nrow(X_use)
 
   # ---- Random coefficient draws ----
   if (nr > 0) {
@@ -135,9 +166,7 @@ rpbnb_tmb_elasticities <- function(fit,
     rr    <- rand_realize(Z, dist, sign, b[rand_idx], scales)
     dev   <- rr$dev
     cmat  <- rr$coef        # n_draws x n_rand
-    R     <- nrow(Z)
   } else {
-    R     <- 1L
     dev   <- matrix(0, 1, 0)
     cmat  <- NULL
     scale_names <- character(0)
@@ -147,13 +176,7 @@ rpbnb_tmb_elasticities <- function(fit,
   xb   <- as.vector(X_use %*% b)
   xr   <- if (nr > 0) X_use[, rand_idx, drop = FALSE] else NULL
 
-  # Pre-compute per-draw mu matrices for the chosen design
-  mu_mat <- matrix(0, xu, R)
-  for (r in seq_len(R)) {
-    eta <- xb + if (nr > 0) as.vector(xr %*% dev[r, ]) else 0
-    mu_mat[, r] <- exp(pmin(pmax(eta, -700), 700))
-  }
-  mu_bar <- rowMeans(mu_mat)   # x u x 1
+  mu_bar <- .draw_mean_exp(xb, xr, dev)
 
   res <- vapply(seq_along(sel), function(m) {
     j <- sel[m]; rj <- match(j, rand_idx)
@@ -165,22 +188,13 @@ rpbnb_tmb_elasticities <- function(fit,
       xb1 <- as.vector(X1 %*% b)
       xr0 <- if (nr > 0) X0[, rand_idx, drop = FALSE] else NULL
       xr1 <- if (nr > 0) X1[, rand_idx, drop = FALSE] else NULL
-      mu0 <- rowMeans(vapply(seq_len(R), function(r) {
-        eta <- if (nr > 0) xb0 + as.vector(xr0 %*% dev[r, ]) else xb0
-        exp(pmin(pmax(eta, -700), 700))
-      }, numeric(xu)))
-      mu1 <- rowMeans(vapply(seq_len(R), function(r) {
-        eta <- if (nr > 0) xb1 + as.vector(xr1 %*% dev[r, ]) else xb1
-        exp(pmin(pmax(eta, -700), 700))
-      }, numeric(xu)))
+      mu0 <- .draw_mean_exp(xb0, xr0, dev)
+      mu1 <- .draw_mean_exp(xb1, xr1, dev)
       if (quantity == "me") mean(mu1 - mu0) else mean(mu1 / mu0 - 1)
     } else {
       if (!is.na(rj)) {
         # Random continuous: average of coef_rj * mu_r over draws
-        dmu <- rowMeans(vapply(seq_len(R), function(r) {
-          eta <- xb + as.vector(xr %*% dev[r, ])
-          cmat[r, rj] * exp(pmin(pmax(eta, -700), 700))
-        }, numeric(xu)))
+        dmu <- .draw_mean_weighted_exp(xb, xr, dev, cmat[, rj])
       } else {
         # Fixed continuous: b_j * mu
         dmu <- b[j] * mu_bar
@@ -195,16 +209,14 @@ rpbnb_tmb_elasticities <- function(fit,
   # Extract vcov for these parameters by position (the full vcov matrix has
   # dimnames matching par_names, but mapped/fixed parameters may have NAs).
   idx <- match(theta_names, names(fit$coef))
-  V <- fit$vcov[idx, idx, drop = FALSE]
+  V <- vcov(fit)[idx, idx, drop = FALSE]
 
   se <- rep(NA_real_, length(res))
   if (all(is.finite(V)) && nrow(V) == length(theta_hat)) {
     G <- numDeriv::jacobian(.estimand_t, theta_hat,
                             fit = fit, eq = eq, sel = sel, cn = cn,
                             is_bin = is_bin, quantity = quantity,
-                            X_use = X_use, rand_idx = rand_idx,
-                            R = R, dev0 = dev, cmat0 = cmat,
-                            xu = xu, nr = nr, coef_prefix = coef_prefix)
+                            X_use = X_use, rand_idx = rand_idx)
     for (m in seq_along(res)) {
       g <- G[m, ]
       se[m] <- sqrt(as.numeric(t(g) %*% V %*% g))
@@ -242,8 +254,7 @@ rpbnb_tmb_elasticities <- function(fit,
 #' @keywords internal
 #' @noRd
 .estimand_t <- function(theta, fit, eq, sel, cn, is_bin, quantity,
-                        X_use, rand_idx, R, dev0, cmat0, xu, nr,
-                        coef_prefix) {
+                        X_use, rand_idx) {
   n_par <- length(cn)
   b_t <- theta[seq_len(n_par)]; names(b_t) <- cn
 
@@ -257,22 +268,15 @@ rpbnb_tmb_elasticities <- function(fit,
     rr   <- rand_realize(Z, dist, sign, b_t[rand_idx], scales_t)
     dev_t  <- rr$dev
     cmat_t <- rr$coef
-    R_t    <- nrow(Z)
   } else {
     dev_t  <- matrix(0, 1, 0)
     cmat_t <- NULL
-    R_t    <- 1L
   }
 
   xb_t <- as.vector(X_use %*% b_t)
   xr_t <- if (nr_t > 0) X_use[, rand_idx, drop = FALSE] else NULL
 
-  mu_mat_t <- matrix(0, xu, R_t)
-  for (r in seq_len(R_t)) {
-    eta <- xb_t + if (nr_t > 0) as.vector(xr_t %*% dev_t[r, ]) else 0
-    mu_mat_t[, r] <- exp(pmin(pmax(eta, -700), 700))
-  }
-  mu_bar_t <- rowMeans(mu_mat_t)
+  mu_bar_t <- .draw_mean_exp(xb_t, xr_t, dev_t)
 
   vapply(seq_along(sel), function(m) {
     j <- sel[m]; rj <- match(j, rand_idx)
@@ -283,21 +287,14 @@ rpbnb_tmb_elasticities <- function(fit,
       xb1 <- as.vector(X1 %*% b_t)
       xr0 <- if (nr_t > 0) X0[, rand_idx, drop = FALSE] else NULL
       xr1 <- if (nr_t > 0) X1[, rand_idx, drop = FALSE] else NULL
-      mu0 <- rowMeans(vapply(seq_len(R_t), function(r) {
-        eta <- if (nr_t > 0) xb0 + as.vector(xr0 %*% dev_t[r, ]) else xb0
-        exp(pmin(pmax(eta, -700), 700))
-      }, numeric(xu)))
-      mu1 <- rowMeans(vapply(seq_len(R_t), function(r) {
-        eta <- if (nr_t > 0) xb1 + as.vector(xr1 %*% dev_t[r, ]) else xb1
-        exp(pmin(pmax(eta, -700), 700))
-      }, numeric(xu)))
+      mu0 <- .draw_mean_exp(xb0, xr0, dev_t)
+      mu1 <- .draw_mean_exp(xb1, xr1, dev_t)
       if (quantity == "me") mean(mu1 - mu0) else mean(mu1 / mu0 - 1)
     } else {
       if (!is.na(rj)) {
-        dmu <- rowMeans(vapply(seq_len(R_t), function(r) {
-          eta <- xb_t + as.vector(xr_t %*% dev_t[r, ])
-          cmat_t[r, rj] * exp(pmin(pmax(eta, -700), 700))
-        }, numeric(xu)))
+        dmu <- .draw_mean_weighted_exp(
+          xb_t, xr_t, dev_t, cmat_t[, rj]
+        )
       } else {
         dmu <- b_t[j] * mu_bar_t
       }
