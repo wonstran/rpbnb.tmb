@@ -2,7 +2,13 @@
 coef.rpbnb_tmb_fit <- function(object, ...) object$coef
 
 #' @export
-vcov.rpbnb_tmb_fit <- function(object, ...) object$vcov
+vcov.rpbnb_tmb_fit <- function(object, ...) {
+  if (!is.null(object$vcov)) return(object$vcov)
+  nm <- names(object$coef)
+  out <- matrix(NA_real_, length(nm), length(nm), dimnames = list(nm, nm))
+  if (!is.null(object$vcov_diag)) diag(out) <- object$vcov_diag
+  out
+}
 
 #' @export
 logLik.rpbnb_tmb_fit <- function(object, ...) {

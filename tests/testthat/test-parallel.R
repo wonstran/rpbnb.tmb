@@ -64,6 +64,58 @@ test_that("rpbnb_tmb_control validates n_cores", {
   expect_equal(rpbnb_tmb_control(n_cores = 2)$n_cores, 2L)
 })
 
+test_that("rpbnb_tmb_control validates memory guardrails", {
+  expect_error(rpbnb_tmb_control(max_threads = 0), "max_threads")
+  expect_error(rpbnb_tmb_control(max_threads = 1.5), "max_threads")
+  expect_error(rpbnb_tmb_control(max_threads = "2"), "max_threads")
+  expect_error(rpbnb_tmb_control(max_workload = 0), "max_workload")
+  expect_error(rpbnb_tmb_control(max_workload = NA_real_), "max_workload")
+  expect_error(rpbnb_tmb_control(max_workload = "large"), "max_workload")
+
+  control <- rpbnb_tmb_control(max_threads = 3, max_workload = Inf)
+  expect_identical(control$max_threads, 3L)
+  expect_identical(control$max_workload, Inf)
+})
+
+test_that("thread configuration respects the memory-aware cap", {
+  previous <- TMB::openmp(DLL = "rpbnb.tmb")
+  on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
+  supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
+  if (supported < 2L) skip("TMB runtime supports only one thread")
+
+  expect_warning(
+    realized <- .configure_tmb_threads(
+      n_cores = min(4L, supported),
+      max_threads = 1L,
+      DLL = "rpbnb.tmb"
+    ),
+    "max_threads"
+  )
+  expect_identical(realized, 1L)
+})
+
+test_that("weighted workload guard fails early and supports explicit opt-out", {
+  expect_error(
+    .check_tmb_workload(
+      n = 100L, draws = 10L, family_code = 2L,
+      max_workload = 3999
+    ),
+    "max_workload"
+  )
+  expect_no_error(
+    .check_tmb_workload(
+      n = 100L, draws = 10L, family_code = 2L,
+      max_workload = 4000
+    )
+  )
+  expect_no_error(
+    .check_tmb_workload(
+      n = .Machine$integer.max, draws = .Machine$integer.max,
+      family_code = 2L, max_workload = Inf
+    )
+  )
+})
+
 test_that("TMB thread configuration realizes a valid request", {
   previous <- TMB::openmp(DLL = "rpbnb.tmb")
   on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
@@ -187,6 +239,26 @@ test_that("C++ likelihood declares a TMB parallel accumulator", {
   expect_true(any(grepl("parallel_accumulator<Type> nll", cpp, fixed = TRUE)))
 })
 
+test_that("Gaussian copula quadrature uses a thread-safe atomic primitive", {
+  cpp <- paste(
+    readLines(
+      testthat::test_path("..", "..", "src", "rpbnb.tmb.cpp"),
+      warn = FALSE
+    ),
+    collapse = "\n"
+  )
+  expect_match(
+    cpp,
+    "TMB_ATOMIC_VECTOR_FUNCTION(gaussian_bvn_atomic",
+    fixed = TRUE
+  )
+  expect_false(grepl(
+    "REGISTER_ATOMIC(gaussian_bvn_kernel)",
+    cpp,
+    fixed = TRUE
+  ))
+})
+
 test_that("serial and parallel copula objectives and gradients agree", {
   previous <- TMB::openmp(DLL = "rpbnb.tmb")
   on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
@@ -216,9 +288,17 @@ test_that("serial and parallel copula objectives and gradients agree", {
     par <- serial$obj$par
     serial_fn <- serial$obj$fn(par)
     serial_gr <- serial$obj$gr(par)
+    serial_he <- serial$obj$he(par)
     key <- as.character(family_code)
     expect_equal(serial_fn, unname(reference_fn[[key]]), tolerance = 1e-10)
     expect_equal(as.numeric(serial_gr), reference_gr[[key]], tolerance = 1e-8)
+    if (family_code == 2L) {
+      expect_equal(
+        as.numeric(serial_gr),
+        numDeriv::grad(serial$obj$fn, par),
+        tolerance = 1e-6
+      )
+    }
 
     parallel <- .make_rpbnb_tmb_object(
       data = fixture$data, parameters = fixture$parameters,
@@ -226,10 +306,13 @@ test_that("serial and parallel copula objectives and gradients agree", {
     )
     parallel_fn <- parallel$obj$fn(par)
     parallel_gr <- parallel$obj$gr(par)
+    parallel_he <- parallel$obj$he(par)
 
     expect_equal(parallel_fn, serial_fn, tolerance = 1e-10)
     expect_equal(parallel_gr, serial_gr, tolerance = 1e-8)
+    expect_equal(parallel_he, serial_he, tolerance = 1e-6)
     expect_true(all(is.finite(parallel_gr)))
+    expect_true(all(is.finite(parallel_he)))
   }
 })
 
@@ -247,6 +330,7 @@ test_that("parallel benchmark reports timing and numerical agreement", {
   expect_match(benchmark, "se_diff", fixed = TRUE)
   expect_match(benchmark, "objective_diff", fixed = TRUE)
   expect_match(benchmark, "gradient_diff", fixed = TRUE)
+  expect_match(benchmark, 'keep = "full"', fixed = TRUE)
 })
 
 test_that("demo scripts use configured core counts", {

@@ -258,12 +258,18 @@ copula <- function(family, par = NULL) {
 #' @param reltol Relative convergence tolerance.
 #' @param print_level Verbosity for nlminb.
 #' @param n_cores Number of OpenMP threads for TMB.
+#' @param max_threads Maximum OpenMP threads permitted for one fit. Increase
+#'   explicitly to opt into a larger memory footprint.
+#' @param max_workload Maximum weighted observation-draw evaluations permitted
+#'   before TMB tape construction. Use \code{Inf} to disable the guard.
 #' @param halton_burn Number of leading Halton points to discard.
 #' @export
 rpbnb_tmb_control <- function(iterlim = 500L,
                               reltol = 1e-8,
                               print_level = 0L,
                               n_cores = 1L,
+                              max_threads = 4L,
+                              max_workload = 2e6,
                               halton_burn = 300L) {
   if (length(n_cores) != 1L || !is.numeric(n_cores) ||
       is.na(n_cores) || !is.finite(n_cores) ||
@@ -272,9 +278,22 @@ rpbnb_tmb_control <- function(iterlim = 500L,
     stop("n_cores must be one whole number greater than or equal to 1.",
          call. = FALSE)
   }
+  if (length(max_threads) != 1L || !is.numeric(max_threads) ||
+      is.na(max_threads) || !is.finite(max_threads) ||
+      max_threads < 1 || max_threads != floor(max_threads) ||
+      max_threads > .Machine$integer.max) {
+    stop("max_threads must be one whole number greater than or equal to 1.",
+         call. = FALSE)
+  }
+  if (length(max_workload) != 1L || !is.numeric(max_workload) ||
+      is.na(max_workload) || max_workload <= 0) {
+    stop("max_workload must be one positive number or Inf.", call. = FALSE)
+  }
   structure(list(iterlim = as.integer(iterlim), reltol = reltol,
-                 print_level = as.integer(print_level),
-                 n_cores = as.integer(n_cores),
-                 halton_burn = as.integer(halton_burn)),
+                  print_level = as.integer(print_level),
+                  n_cores = as.integer(n_cores),
+                  max_threads = as.integer(max_threads),
+                  max_workload = as.numeric(max_workload),
+                  halton_burn = as.integer(halton_burn)),
             class = "rpbnb_tmb_control")
 }

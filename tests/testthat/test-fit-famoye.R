@@ -43,3 +43,15 @@ test_that("Famoye with random coefficients converges", {
                         dependence = "famoye", draws = 200)
   expect_true(is.finite(fit$logLik))
 })
+
+test_that("fit_rpbnb_tmb validates draws before constructing Halton points", {
+  d <- data.frame(y1 = c(0, 1), y2 = c(1, 0), x = c(-1, 1))
+  expect_error(
+    fit_rpbnb_tmb(y1 ~ x, y2 ~ x, d, random_1 = "x", draws = 0),
+    "draws"
+  )
+  expect_error(
+    fit_rpbnb_tmb(y1 ~ x, y2 ~ x, d, random_1 = "x", draws = 1.5),
+    "draws"
+  )
+})

@@ -19,6 +19,153 @@
 #define DIST_UNIFORM    2
 #define DIST_TRIANGULAR 3
 
+static const double gaussian_x20[10] = {
+  0.9931285991850949, 0.9639719272779138, 0.9122344282513259,
+  0.8391169718222188, 0.7463319064601508, 0.6360536807265150,
+  0.5108670019508271, 0.3737060887154196, 0.2277858511416451,
+  0.07652652113349733
+};
+static const double gaussian_w20[10] = {
+  0.01761400713915212, 0.04060142980038694, 0.06267204833410906,
+  0.08327674157670475, 0.1019301198172404, 0.1181945319615184,
+  0.1316886384491766, 0.1420961093183821, 0.1491729864726037,
+  0.1527533871307259
+};
+
+// Tape-compressed 20-point bivariate-normal CDF quadrature.
+template<class Type>
+Type gaussian_bvn_quadrature(Type h, Type k, Type r) {
+  Type sig2 = Type(1.0) - r * r;
+  sig2 = CppAD::CondExpLt(sig2, Type(1e-12), Type(1e-12), sig2);
+  Type sig = sqrt(sig2);
+  Type ph = pnorm(h);
+  Type pk = pnorm(k);
+  Type a = CppAD::CondExpLe(ph, pk, ph, pk);
+  Type oth = CppAD::CondExpLe(ph, pk, k, h);
+  oth = CppAD::CondExpGt(oth, Type(10.0), Type(10.0), oth);
+  oth = CppAD::CondExpLt(oth, Type(-10.0), Type(-10.0), oth);
+  a = CppAD::CondExpGe(a, Type(1.0), Type(1.0 - 1e-10), a);
+  a = CppAD::CondExpLe(a, Type(1e-10), Type(1e-10), a);
+
+  Type result = Type(0);
+  Type hw = a / Type(2.0);
+  Type mid = a / Type(2.0);
+  for (int i = 0; i < 10; i++) {
+    Type z1 = qnorm(mid + hw * Type(gaussian_x20[i]));
+    Type z2 = qnorm(mid - hw * Type(gaussian_x20[i]));
+    Type arg1 = (oth - r * z1) / sig;
+    Type arg2 = (oth - r * z2) / sig;
+    result += Type(gaussian_w20[i]) * (pnorm(arg1) + pnorm(arg2));
+  }
+
+  return result * hw;
+}
+
+// Differentiate the quadrature itself so the atomic gradient remains exactly
+// consistent with its value, including its conditional integration limits.
+template<class Type>
+vector<Type> gaussian_bvn_quadrature_gradient(Type h, Type k, Type r) {
+  Type raw_sig2 = Type(1.0) - r * r;
+  Type sig2 = CppAD::CondExpLt(
+    raw_sig2, Type(1e-12), Type(1e-12), raw_sig2
+  );
+  Type dsig2_dr = CppAD::CondExpLt(
+    raw_sig2, Type(1e-12), Type(0), Type(-2) * r
+  );
+  Type sig = sqrt(sig2);
+  Type dsig_dr = dsig2_dr / (Type(2) * sig);
+
+  Type ph = pnorm(h);
+  Type pk = pnorm(k);
+  Type raw_a = CppAD::CondExpLe(ph, pk, ph, pk);
+  Type raw_oth = CppAD::CondExpLe(ph, pk, k, h);
+  Type a = CppAD::CondExpGe(
+    raw_a, Type(1.0), Type(1.0 - 1e-10), raw_a
+  );
+  a = CppAD::CondExpLe(a, Type(1e-10), Type(1e-10), a);
+  Type oth = CppAD::CondExpGt(
+    raw_oth, Type(10.0), Type(10.0), raw_oth
+  );
+  oth = CppAD::CondExpLt(oth, Type(-10.0), Type(-10.0), oth);
+
+  Type a_active = CppAD::CondExpGe(
+    raw_a, Type(1.0), Type(0),
+    CppAD::CondExpLe(raw_a, Type(1e-10), Type(0), Type(1))
+  );
+  Type oth_active = CppAD::CondExpGt(
+    raw_oth, Type(10.0), Type(0),
+    CppAD::CondExpLt(raw_oth, Type(-10.0), Type(0), Type(1))
+  );
+  Type da_dh = a_active * CppAD::CondExpLe(
+    ph, pk, dnorm(h, Type(0), Type(1), false), Type(0)
+  );
+  Type da_dk = a_active * CppAD::CondExpLe(
+    ph, pk, Type(0), dnorm(k, Type(0), Type(1), false)
+  );
+  Type doth_dh = oth_active * CppAD::CondExpLe(
+    ph, pk, Type(0), Type(1)
+  );
+  Type doth_dk = oth_active * CppAD::CondExpLe(
+    ph, pk, Type(1), Type(0)
+  );
+
+  Type sum_f = Type(0);
+  Type sum_da = Type(0);
+  Type sum_doth = Type(0);
+  Type sum_dr = Type(0);
+  for (int i = 0; i < 10; i++) {
+    for (int side = -1; side <= 1; side += 2) {
+      Type c = (Type(1) + Type(side) * Type(gaussian_x20[i])) /
+        Type(2);
+      Type z = qnorm(a * c);
+      Type numerator = oth - r * z;
+      Type arg = numerator / sig;
+      Type phi_arg = dnorm(arg, Type(0), Type(1), false);
+      Type phi_z = dnorm(z, Type(0), Type(1), false);
+      Type weight = Type(gaussian_w20[i]);
+
+      sum_f += weight * pnorm(arg);
+      sum_da += weight * phi_arg * (-r / sig) * c / phi_z;
+      sum_doth += weight * phi_arg / sig;
+      sum_dr += weight * phi_arg * (
+        -z / sig - numerator * dsig_dr / sig2
+      );
+    }
+  }
+
+  Type dvalue_da = sum_f / Type(2) + a * sum_da / Type(2);
+  Type dvalue_doth = a * sum_doth / Type(2);
+  Type dvalue_dr = a * sum_dr / Type(2);
+  vector<Type> gradient(3);
+  gradient(0) = dvalue_da * da_dh + dvalue_doth * doth_dh;
+  gradient(1) = dvalue_da * da_dk + dvalue_doth * doth_dk;
+  gradient(2) = dvalue_dr;
+  return gradient;
+}
+
+// A known-derivative primitive is thread safe and compresses the quadrature
+// to one tape operation. TMB differentiates its reverse rule for Hessians.
+TMB_ATOMIC_VECTOR_FUNCTION(gaussian_bvn_atomic,
+  1,
+  ty[0] = gaussian_bvn_quadrature(tx[0], tx[1], tx[2]);
+  ,
+  vector<Type> gradient = gaussian_bvn_quadrature_gradient(
+    tx[0], tx[1], tx[2]
+  );
+  px[0] = py[0] * gradient(0);
+  px[1] = py[0] * gradient(1);
+  px[2] = py[0] * gradient(2);
+)
+
+template<class Type>
+Type gaussian_bvn_cdf(Type h, Type k, Type r) {
+  CppAD::vector<Type> input(3);
+  input[0] = h;
+  input[1] = k;
+  input[2] = r;
+  return gaussian_bvn_atomic(input)[0];
+}
+
 template<class Type>
 Type objective_function<Type>::operator() () {
 
@@ -128,50 +275,6 @@ Type objective_function<Type>::operator() () {
       return s * (2.0 * base - 1.0);
     // triangular
     return s * base;
-  };
-
-  // ---- Bivariate normal CDF (for Gaussian copula) ----
-  auto bvncdf = [](Type h, Type k, Type r) -> Type {
-    // P(Z1 <= h, Z2 <= k) for standard bivariate normal with correlation r
-    // Uses Gauss-Legendre quadrature on the integral:
-    // Phi2(h,k;r) = int_0^{Phi(h)} Phi((k - r*Phi^{-1}(p))/sqrt(1-r^2)) dp
-    // rho=tanh(z_dep) is strictly inside (-1,1).  Conditional expressions are
-    // required here: ordinary if-statements are frozen when CppAD records the
-    // tape and therefore do not protect later optimizer evaluations.
-    Type sig2 = Type(1.0) - r * r;
-    sig2 = CppAD::CondExpLt(sig2, Type(1e-12), Type(1e-12), sig2);
-    Type sig = sqrt(sig2);
-    // Choose shorter integration path: use min(Phi(h), Phi(k))
-    Type ph = pnorm(h);
-    Type pk = pnorm(k);
-    Type a = CppAD::CondExpLe(ph, pk, ph, pk);
-    Type oth = CppAD::CondExpLe(ph, pk, k, h);
-    // Clamp a and oth to prevent extreme qnorm arguments
-    oth = CppAD::CondExpGt(oth, Type(10.0), Type(10.0), oth);
-    oth = CppAD::CondExpLt(oth, Type(-10.0), Type(-10.0), oth);
-    a = CppAD::CondExpGe(a, Type(1.0), Type(1.0 - 1e-10), a);
-    a = CppAD::CondExpLe(a, Type(1e-10), Type(1e-10), a);
-    // 20-point Gauss-Legendre quadrature on [0, a]
-    static const double x20[10] = {0.9931285991850949, 0.9639719272779138,
-      0.9122344282513259, 0.8391169718222188, 0.7463319064601508,
-      0.6360536807265150, 0.5108670019508271, 0.3737060887154196,
-      0.2277858511416451, 0.07652652113349733};
-    static const double w20[10] = {0.01761400713915212, 0.04060142980038694,
-      0.06267204833410906, 0.08327674157670475, 0.1019301198172404,
-      0.1181945319615184, 0.1316886384491766, 0.1420961093183821,
-      0.1491729864726037, 0.1527533871307259};
-    Type result = 0;
-    Type hw = a / Type(2.0);
-    Type mid = a / Type(2.0);
-    for (int i = 0; i < 10; i++) {
-      Type z1 = qnorm(mid + hw * x20[i]);
-      Type z2 = qnorm(mid - hw * x20[i]);
-      Type arg1 = (oth - r * z1) / sig;
-      Type arg2 = (oth - r * z2) / sig;
-      result += w20[i] * (pnorm(arg1) + pnorm(arg2));
-    }
-    result = result * hw;
-    return result;
   };
 
   // Famoye constant d = 1 - exp(-1) (loop-invariant)
@@ -298,10 +401,10 @@ Type objective_function<Type>::operator() () {
           Type qam = safe_qnorm(a1m);
           Type qb = safe_qnorm(b1);
           Type qbm = safe_qnorm(b1m);
-          C_ab   = bvncdf(qa,   qb,  rho);
-          C_amb  = bvncdf(qam,  qb,  rho);
-          C_abm  = bvncdf(qa,   qbm, rho);
-          C_ambm = bvncdf(qam,  qbm, rho);
+          C_ab   = gaussian_bvn_cdf(qa,   qb,  rho);
+          C_amb  = gaussian_bvn_cdf(qam,  qb,  rho);
+          C_abm  = gaussian_bvn_cdf(qa,   qbm, rho);
+          C_ambm = gaussian_bvn_cdf(qam,  qbm, rho);
         } else {
           auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
             if (u == Type(0.0) || v == Type(0.0)) return Type(0.0);

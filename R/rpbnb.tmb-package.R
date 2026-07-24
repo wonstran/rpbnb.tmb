@@ -9,5 +9,5 @@
 NULL
 
 #' @importFrom stats nlminb coef vcov logLik AIC BIC predict
-#' @importFrom TMB MakeADFun sdreport
+#' @importFrom TMB MakeADFun
 NULL
