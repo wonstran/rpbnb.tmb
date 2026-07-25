@@ -62,8 +62,10 @@
   obj <- fit$obj
   if (is.null(obj)) return(NULL)
 
-  # Presence is not liveness: a fit round-tripped through saveRDS() keeps the
-  # obj field but its external pointer is dead.
+  # Presence is not liveness, so evaluate rather than assume. Note this does
+  # NOT reject a saveRDS() round-trip: the reloaded ADFun pointer is nil, but
+  # TMB retapes from the data it kept in obj$env and returns a bit-identical
+  # objective value, so the probe passes and profiling is genuinely valid.
   probe <- try(obj$fn(fit$optimizer$par), silent = TRUE)
   if (inherits(probe, "try-error") ||
       length(probe) != 1L || !is.finite(probe)) {
@@ -357,7 +359,9 @@
       "identified by the data, so their standard errors are reported as NA. ",
       "Refit from different starting values, or use a dependence family whose ",
       "range covers the association in these data. ",
-      "rpbnb_tmb_dependence_profile() gives an interval that stays valid here.",
+      "rpbnb_tmb_dependence_profile() reports a likelihood-based interval ",
+      "instead of the NA, but for Famoye it is still mapped through this same ",
+      "frozen box, so widen the box first rather than reading it as a rescue.",
       call. = FALSE
     )
   }

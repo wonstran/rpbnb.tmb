@@ -81,9 +81,12 @@ every other dependence structure. The bounds are computed once at the
 starting values and held fixed for the whole fit; they are \emph{not}
 recomputed at the optimum. A \code{lam} estimate at either end is
 therefore an artefact of the starting values rather than a property of the
-data, which is why the field is exposed. For an interval that remains valid
-at such an optimum, see
-\code{\link{rpbnb_tmb_dependence_profile}}.
+data, which is why the field is exposed.
+\code{\link{rpbnb_tmb_dependence_profile}} reports a likelihood-based
+interval where the delta-method standard error collapses to \code{NA}, but
+for Famoye that interval is mapped through this same frozen box and so
+cannot escape it: widen the box by refitting from better starting values
+before treating such an interval as informative.
 }
 \description{
 Maximum simulated likelihood via TMB (Template Model Builder) with
