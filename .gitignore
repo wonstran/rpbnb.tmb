@@ -16,3 +16,7 @@ src/symbols.rds
 src/*.o
 .Rproj.user
 .worktrees/
+.rlib/
+dist/
+*.Rcheck/
+*.tar.gz

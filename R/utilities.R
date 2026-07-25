@@ -2,6 +2,110 @@
 #' @noRd
 POISSON_M <- 1e-6
 
+#' Ceiling of the bounded Frank link, shared with the C++ template
+#'
+#' The template maps the working parameter through
+#' \code{theta = FRANK_THETA_MAX * tanh(z_dep / FRANK_THETA_MAX)} so that
+#' \code{exp(-theta * u)} cannot overflow.  The value must match
+#' \code{FRANK_THETA_MAX} in \code{src/rpbnb.tmb.cpp}.  It caps attainable
+#' Frank dependence at Kendall's tau of about 0.891.
+#' @keywords internal
+#' @noRd
+FRANK_THETA_MAX <- 35
+
+#' Measured tape-memory calibration
+#'
+#' The single source for every number in the `max_workload` safety contract:
+#' the guard reads the family weights from here, `rpbnb_tmb_control()` derives
+#' its default from `budget_gib` and `bytes_per_unit`, and the documentation is
+#' generated from this object by `.calibration_doc()`. Nothing restates these
+#' figures, so the code and the documentation cannot drift apart.
+#'
+#' Regenerate with `Rscript inst/benchmark_memory.R`, which writes the raw
+#' measurements to `inst/extdata/memory_calibration.csv` and prints the
+#' regression these constants come from. Re-run it after any template, TMB,
+#' compiler or allocator change.
+#'
+#' @keywords internal
+#' @noRd
+TAPE_CALIBRATION <- list(
+  # Retained tape, Famoye: tape_MiB = 13.374 + 0.0011332 * units, R^2 = 0.9994.
+  tape_bytes_per_unit = 1221,
+  tape_intercept_mib = 13.374,
+  tape_r_squared = 0.9994,
+  # PEAK working set is what actually causes std::bad_alloc -- the failure that
+  # started this guard -- and it runs about 6.1x the retained footprint,
+  # because TMB records the full likelihood before pruning to each region.
+  # The budget is therefore set on peak, not on tape.
+  peak_bytes_per_unit = 12083,
+  peak_over_retained = 6.11,
+  budget_gib = 8,
+  # Conservative: the largest ratio to Famoye observed at matched workload.
+  # Frank really is ~2.9x -- a weight-1 assumption for it would under-budget
+  # by nearly threefold.
+  family_weight = c(
+    independence = 0.7, famoye = 1.0, frank = 2.9,
+    gaussian = 1.1, clayton = 1.0
+  ),
+  measured_families = c(
+    "independence", "famoye", "frank", "gaussian", "clayton"
+  ),
+  source = "inst/benchmark_memory.R"
+)
+
+#' Documentation text generated from TAPE_CALIBRATION
+#' @keywords internal
+#' @noRd
+.calibration_doc <- function(calibration = TAPE_CALIBRATION) {
+  weights <- calibration$family_weight
+  paste0(
+    "@param max_workload Maximum weighted observation-draw evaluations ",
+    "permitted before TMB tape construction; \\code{Inf} disables the guard. ",
+    "The default and every figure here are derived from ",
+    "\\code{TAPE_CALIBRATION}, so this text cannot drift from the shipped ",
+    "behaviour.\n\n",
+    "With the default \\code{parallel_tape = FALSE} the budget is per fit; ",
+    "with \\code{parallel_tape = TRUE} the tapes are built concurrently and ",
+    "the guard multiplies the workload by the realized thread count.\n\n",
+    "One unit is one weighted observation-draw. All figures are measured by ",
+    "\\code{", calibration$source, "}, whose raw results are stored in ",
+    "\\code{inst/extdata/memory_calibration.csv}.\n\n",
+    "Retained tape size depends on \\code{n * draws} alone: ",
+    "tape (MiB) = ", format(calibration$tape_intercept_mib, digits = 5),
+    " + ", format(calibration$tape_bytes_per_unit / 1024^2, digits = 4),
+    " * units, with R^2 = ", format(calibration$tape_r_squared, digits = 5),
+    " (", calibration$tape_bytes_per_unit, " bytes per unit over the largest ",
+    "workloads; per-unit cost is higher at small workloads because of the ",
+    "fixed intercept).\n\n",
+    "The budget is set on \\emph{peak} working set, not on retained tape, ",
+    "because peak is what exhausts memory: TMB records the whole likelihood ",
+    "before pruning it to each parallel region, so peak runs about ",
+    calibration$peak_over_retained, " times the retained footprint, or ",
+    calibration$peak_bytes_per_unit, " bytes per unit. The default of ",
+    format(.calibration_default_workload(calibration),
+           scientific = FALSE, big.mark = ","),
+    " units therefore targets a peak of about ", calibration$budget_gib,
+    " GiB for one fit.\n\n",
+    "Families cost different amounts per unit, so each carries a weight -- ",
+    "the largest ratio to Famoye observed at matched workload: ",
+    paste(sprintf("%s %g", names(weights), weights), collapse = ", "),
+    ". Frank is nearly three times Famoye, so treating it as unweighted would ",
+    "under-budget it threefold.\n\n",
+    "Raise \\code{max_workload} deliberately against the memory you actually ",
+    "have, not to make one particular dataset fit."
+  )
+}
+
+#' Default workload budget implied by the calibration
+#'
+#' Derived, not restated: `rpbnb_tmb_control()` uses this for its default so
+#' the published constants and the shipped behaviour cannot disagree.
+#' @keywords internal
+#' @noRd
+.calibration_default_workload <- function(calibration = TAPE_CALIBRATION) {
+  signif(calibration$budget_gib * 1024^3 / calibration$peak_bytes_per_unit, 1)
+}
+
 #' @keywords internal
 #' @noRd
 .chk_poisson_flag <- function(x, arg) {
@@ -36,15 +140,21 @@ POISSON_M <- 1e-6
   Y2 <- .check_counts(stats::model.response(mf2), "2")
   X1 <- stats::model.matrix(formula_1, mf1)
   X2 <- stats::model.matrix(formula_2, mf2)
+  model_meta <- list(
+    eq1 = list(
+      terms = stats::delete.response(stats::terms(mf1)),
+      xlevels = lapply(mf1[vapply(mf1, is.factor, logical(1))], levels),
+      contrasts = attr(X1, "contrasts")
+    ),
+    eq2 = list(
+      terms = stats::delete.response(stats::terms(mf2)),
+      xlevels = lapply(mf2[vapply(mf2, is.factor, logical(1))], levels),
+      contrasts = attr(X2, "contrasts")
+    )
+  )
   list(Y1 = Y1, Y2 = Y2, X1 = X1, X2 = X2,
        cn1 = colnames(X1), cn2 = colnames(X2),
-       n = length(Y1), data = data_cc)
-}
-
-#' @keywords internal
-#' @noRd
-.bound_mu <- function(X, beta) {
-  pmin(pmax(as.vector(exp(X %*% beta)), 1e-300), 1e15)
+       n = length(Y1), data = data_cc, model_meta = model_meta)
 }
 
 #' @keywords internal
@@ -198,57 +308,27 @@ lambda_bounds_vec <- function(c1, c2) {
   out
 }
 
-.observed_info_vcov <- function(info, par_names, label = "model") {
-  info <- (info + t(info)) / 2
-  ev <- try(eigen(info, symmetric = TRUE, only.values = TRUE), silent = TRUE)
-  bad_eig <- inherits(ev, "try-error") || any(!is.finite(ev$values))
-  min_eig <- if (bad_eig) NA_real_ else min(ev$values)
-  max_eig <- if (bad_eig) NA_real_ else max(ev$values)
-  pd <- isTRUE(!bad_eig && min_eig > 0)
-  ridge <- 0
-  if (!pd) {
-    ridge <- if (bad_eig) 1e-2 else 1e-8 - min_eig
-    info <- info + diag(ridge, nrow(info))
-  }
-  vc <- try(solve(info), silent = TRUE)
-  inv_method <- "solve"
-  if (inherits(vc, "try-error")) { vc <- .pseudo_inv(info); inv_method <- "pseudo_inv" }
-  dimnames(vc) <- list(par_names, par_names)
-  se <- sqrt(pmax(diag(vc), 0)); names(se) <- par_names
-  cond <- if (pd) max_eig / min_eig else NA_real_
-  list(vcov = vc, se = se,
-       diag = list(min_eigenvalue = min_eig, max_eigenvalue = max_eig,
-                   condition = cond, ridge = ridge, inversion = inv_method,
-                   positive_definite = pd, repaired = !pd, label = label))
-}
-
-# Moore-Penrose pseudoinverse via SVD (base R, no MASS dependency)
-.pseudo_inv <- function(x, tol = sqrt(.Machine$double.eps)) {
-  s <- svd(x)
-  d <- s$d
-  d[d > tol] <- 1 / d[d > tol]
-  d[d <= tol] <- 0
-  s$v %*% diag(d, nrow = length(d)) %*% t(s$u)
-}
-
-.free_index_vcov <- function(info, par_names, free, label = "model") {
-  if (all(free)) return(.observed_info_vcov(info, par_names, label = label))
-  sub <- .observed_info_vcov(info[free, free, drop = FALSE], par_names[free], label = label)
-  p <- length(par_names)
-  vc <- matrix(NA_real_, p, p, dimnames = list(par_names, par_names))
-  vc[free, free] <- sub$vcov
-  se <- rep(NA_real_, p); names(se) <- par_names
-  se[free] <- sub$se
-  list(vcov = vc, se = se, diag = sub$diag)
-}
-
+#' Specify a copula dependence model
+#'
+#' Creates a copula specification for \code{fit_rpbnb_tmb()} or
+#' \code{simulate_rpbnb_tmb()}. If \code{par} is omitted during fitting, the
+#' dependence parameter is estimated. Simulation uses independence when it is
+#' omitted.
+#'
+#' @param family Copula family: \code{"frank"}, \code{"normal"} (Gaussian), or
+#'   \code{"kimeldorf"} (Clayton).
+#' @param par Optional natural-scale dependence parameter: Frank theta,
+#'   Gaussian correlation rho, or positive Clayton theta.
+#' @return An object of class \code{rpbnb_copula}.
 #' @export
 copula <- function(family, par = NULL) {
   family <- match.arg(family, c("frank", "normal", "kimeldorf"))
   if (!is.null(par)) {
-    if (family == "normal" && (abs(par) >= 1)) stop("|rho| must be < 1.")
+    if (!is.numeric(par) || length(par) != 1L || !is.finite(par)) {
+      stop("`par` must be one finite numeric value.", call. = FALSE)
+    }
+    if (family == "normal" && abs(par) >= 1) stop("|rho| must be < 1.")
     if (family == "kimeldorf" && par <= 0) stop("Clayton theta must be > 0.")
-    if (family == "frank" && !is.finite(par)) stop("Frank theta must be finite.")
   }
   structure(list(family = family, par = par), class = "rpbnb_copula")
 }
@@ -260,8 +340,10 @@ copula <- function(family, par = NULL) {
 #' @param n_cores Number of OpenMP threads for TMB.
 #' @param max_threads Maximum OpenMP threads permitted for one fit. Increase
 #'   explicitly to opt into a larger memory footprint.
-#' @param max_workload Maximum weighted observation-draw evaluations permitted
-#'   before TMB tape construction. Use \code{Inf} to disable the guard.
+#' @eval .calibration_doc()
+#' @param parallel_tape Construct per-thread TMB tapes concurrently. The
+#'   default \code{FALSE} constructs them sequentially to reduce peak memory;
+#'   objective and gradient evaluation remains parallel.
 #' @param halton_burn Number of leading Halton points to discard.
 #' @export
 rpbnb_tmb_control <- function(iterlim = 500L,
@@ -269,7 +351,9 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               print_level = 0L,
                               n_cores = 1L,
                               max_threads = 4L,
-                              max_workload = 2e6,
+                              max_workload =
+                                .calibration_default_workload(),
+                              parallel_tape = FALSE,
                               halton_burn = 300L) {
   if (length(n_cores) != 1L || !is.numeric(n_cores) ||
       is.na(n_cores) || !is.finite(n_cores) ||
@@ -289,11 +373,17 @@ rpbnb_tmb_control <- function(iterlim = 500L,
       is.na(max_workload) || max_workload <= 0) {
     stop("max_workload must be one positive number or Inf.", call. = FALSE)
   }
+  if (!is.logical(parallel_tape) || length(parallel_tape) != 1L ||
+      is.na(parallel_tape)) {
+    stop("parallel_tape must be one non-missing logical value.",
+         call. = FALSE)
+  }
   structure(list(iterlim = as.integer(iterlim), reltol = reltol,
                   print_level = as.integer(print_level),
                   n_cores = as.integer(n_cores),
                   max_threads = as.integer(max_threads),
                   max_workload = as.numeric(max_workload),
+                  parallel_tape = parallel_tape,
                   halton_burn = as.integer(halton_burn)),
             class = "rpbnb_tmb_control")
 }

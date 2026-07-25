@@ -10,7 +10,8 @@ rpbnb_tmb_control(
   print_level = 0L,
   n_cores = 1L,
   max_threads = 4L,
-  max_workload = 2e+06,
+  max_workload = .calibration_default_workload(),
+  parallel_tape = FALSE,
   halton_burn = 300L
 )
 }
@@ -26,8 +27,23 @@ rpbnb_tmb_control(
 \item{max_threads}{Maximum OpenMP threads permitted for one fit. Increase
 explicitly to opt into a larger memory footprint.}
 
-\item{max_workload}{Maximum weighted observation-draw evaluations permitted
-before TMB tape construction. Use \code{Inf} to disable the guard.}
+\item{max_workload}{Maximum weighted observation-draw evaluations permitted before TMB tape construction; \code{Inf} disables the guard. The default and every figure here are derived from \code{TAPE_CALIBRATION}, so this text cannot drift from the shipped behaviour.
+
+With the default \code{parallel_tape = FALSE} the budget is per fit; with \code{parallel_tape = TRUE} the tapes are built concurrently and the guard multiplies the workload by the realized thread count.
+
+One unit is one weighted observation-draw. All figures are measured by \code{inst/benchmark_memory.R}, whose raw results are stored in \code{inst/extdata/memory_calibration.csv}.
+
+Retained tape size depends on \code{n * draws} alone: tape (MiB) = 13.374 + 0.001164 * units, with R^2 = 0.9994 (1221 bytes per unit over the largest workloads; per-unit cost is higher at small workloads because of the fixed intercept).
+
+The budget is set on \emph{peak} working set, not on retained tape, because peak is what exhausts memory: TMB records the whole likelihood before pruning it to each parallel region, so peak runs about 6.11 times the retained footprint, or 12083 bytes per unit. The default of 700,000 units therefore targets a peak of about 8 GiB for one fit.
+
+Families cost different amounts per unit, so each carries a weight -- the largest ratio to Famoye observed at matched workload: independence 0.7, famoye 1, frank 2.9, gaussian 1.1, clayton 1. Frank is nearly three times Famoye, so treating it as unweighted would under-budget it threefold.
+
+Raise \code{max_workload} deliberately against the memory you actually have, not to make one particular dataset fit.}
+
+\item{parallel_tape}{Construct per-thread TMB tapes concurrently. The
+default \code{FALSE} constructs them sequentially to reduce peak memory;
+objective and gradient evaluation remains parallel.}
 
 \item{halton_burn}{Number of leading Halton points to discard.}
 }

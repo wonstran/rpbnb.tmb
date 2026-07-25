@@ -36,10 +36,8 @@ beta2 <- c("(Intercept)" = 0.30, x_age = -0.10, x_income = 0.25, x_score = 0.15,
            d_college = 0.25, d_smoker = 0.10)
 
 # ---- 3. RANDOM coefficients (continuous -> well identified) -----------------
-random_1 <- list(x_age   = list(dist = "normal", sd = 0.30),
-                 d_urban = list(dist = "normal", sd = 0.25))
-random_2 <- list(x_income = list(dist = "normal", sd = 0.20),
-                 d_college = list(dist = "normal", sd = 0.25))
+random_1 <- list(x_age = list(dist = "normal", sd = 0.30))
+random_2 <- list(x_income = list(dist = "normal", sd = 0.25))
 
 # ---- 4. NB2 dispersions & Famoye dependence (positive lambda) ---------------
 dispersion <- c(m1 = 0.50, m2 = 0.60)
@@ -78,8 +76,11 @@ cat(sprintf("y2: mean=%.3f var=%.3f\n", mean(data$y2), var(data$y2)))
 cat(sprintf("cor(y1, y2) = %.4f\n", cor(data$y1, data$y2)))
 
 # ---- 7. Persist data + ground-truth parameters ------------------------------
-dir.create("data", showWarnings = FALSE)
-out_csv <- file.path("data", "simulated_rpbnb_complex.csv")
+output_dir <- Sys.getenv(
+  "RPBNB_OUTPUT_DIR", unset = file.path("inst", "extdata")
+)
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+out_csv <- file.path(output_dir, "simulated_rpbnb_dependent.csv")
 write.csv(data, out_csv, row.names = FALSE)
 
 truth <- list(
@@ -89,7 +90,7 @@ truth <- list(
   random_names_1 = names(random_1),
   random_names_2 = names(random_2)
 )
-out_rds <- file.path("data", "simulated_rpbnb_complex_truth.rds")
+out_rds <- file.path(output_dir, "simulated_rpbnb_dependent_truth.rds")
 saveRDS(truth, out_rds)
 
 cat("\nSaved data  ->", out_csv, "\n")

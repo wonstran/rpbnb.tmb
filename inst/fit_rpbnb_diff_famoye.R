@@ -22,13 +22,19 @@ library(rpbnb.tmb)
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- Settings ---------------------------------------------------------------
+# draws is bounded by memory, not by taste: peak working set runs about
+# 12 kB per observation-draw (see TAPE_CALIBRATION / inst/benchmark_memory.R),
+# so 3874 obs x 200 draws is ~8 GiB peak -- right at the default
+# max_workload. Raise both deliberately if you have the memory.
 n_obs <- 5000L
-draws <- 400L
+draws <- 200L
 n_cores <- 8 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
-data <- read.csv(file.path("data", "rwm1984_bnb.csv"))
+data <- read.csv(system.file(
+  "extdata", "rwm1984_bnb.csv", package = "rpbnb.tmb", mustWork = TRUE
+))
 #data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]
 cat("=== RP-BNB (different formulas, Famoye) on rwm1984 health counts ===\n")
 cat("Observations :", nrow(data), "\n")
@@ -82,9 +88,7 @@ summary(fit)
 
 # ---- 4. Fitted means (predict) ----------------------------------------------
 sep(); cat("FITTED MEANS (predict) -- first 6 observations\n"); sep()
-cat("(predict.rpbnb_tmb_fit currently returns the raw coefficients;\n",
-    " fitted means are available as fit$mu1 / fit$mu2)\n", sep = "")
-print(head(data.frame(mu1 = fit$mu1, mu2 = fit$mu2)))
+print(head(predict(fit)))
 
 # ---- 5. Dependence ----------------------------------------------------------
 sep(); cat("DEPENDENCE (sdreport)\n"); sep()

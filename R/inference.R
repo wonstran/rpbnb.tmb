@@ -3,18 +3,79 @@
 #' @noRd
 .rpbnb_natural_report <- function(coef, family_code, lamLo, lamHi) {
   clamp_exp <- function(x) exp(pmin(pmax(x, -20), 20))
-  clamp_deriv <- function(x, value) if (x > -20 && x < 20) value else 0
-  add <- function(value, source, derivative) {
-    list(value = value, source = source, derivative = derivative)
+  # Matches the template's CondExp clamp, which passes the input through at
+  # exactly +/-20 rather than treating equality as clamped.
+  clamp_deriv <- function(x, value) if (x >= -20 && x <= 20) value else 0
+  add <- function(value, source, derivative, boundary = FALSE,
+                  side = NA_character_) {
+    list(
+      value = value, source = source, derivative = derivative,
+      boundary = isTRUE(boundary),
+      side = if (isTRUE(boundary)) side else NA_character_
+    )
+  }
+
+  # A reported delta-method standard error is untrustworthy for three distinct
+  # reasons, and only these three.  Conflating any of them with "the estimate
+  # is close to the edge of its range" would suppress good inference: a
+  # Gaussian correlation of 0.964 sits near |rho| = 1, but |rho| < 1 is the
+  # model's genuine parameter domain and drho/dz is still 0.07.
+  #
+  # (a) SMOOTH artificial cap.  The Famoye bounds frozen at the starting values
+  #     and the Frank overflow guard squash the working parameter through a
+  #     logistic or tanh, so the map is already compressed well before the cap
+  #     is reached and the estimate is demonstrably being shaped by it.
+  #     Proximity is the right test here.  The 2% margin is a judgement call:
+  #     close enough that the cap dominates, loose enough not to fire on
+  #     ordinary fits.
+  near_smooth_cap <- function(value, lo, hi, margin = 0.02) {
+    if (!is.finite(value) || !is.finite(lo) || !is.finite(hi)) {
+      return(NA_character_)
+    }
+    if (!(hi > lo)) return("degenerate")
+    tol <- margin * (hi - lo)
+    if ((value - lo) <= tol) return("lower")
+    if ((hi - value) <= tol) return("upper")
+    NA_character_
+  }
+  # (b) HARD clamp reached.  pmin/pmax clamps are the *identity* strictly
+  #     inside their range, so a log_m of 19.3 is untouched by a clamp at 20
+  #     and flagging it would be a false positive.
+  #
+  #     The comparison is non-strict, because exact equality is a kink, not an
+  #     interior point: at z = -20 the left derivative is 0 and the right is
+  #     exp(-20), so the delta method has no unique derivative there.  The
+  #     template's CondExp happens to select the pass-through branch, and
+  #     clamp_deriv() matches it so the R/C++ contract stays exact -- but which
+  #     branch CppAD differentiates is a mechanical detail, not a licence to
+  #     report the result as identified inference.
+  clamp_reached <- function(z, lo = -20, hi = 20) {
+    if (!is.finite(z)) return("degenerate")
+    if (z <= lo) return("lower")
+    if (z >= hi) return("upper")
+    NA_character_
+  }
+  # (c) The link's derivative has collapsed, so the delta-method standard error
+  #     is exactly zero or NaN whatever the working-scale uncertainty is.  This
+  #     is what catches a genuinely bounded domain: tanh reaches 1 in double
+  #     precision near z = 19.1, and past that rho carries no information.
+  flag <- function(derivative, cap_side = NA_character_) {
+    if (!is.na(cap_side)) return(cap_side)
+    if (!is.finite(derivative) || derivative == 0) return("degenerate")
+    NA_character_
   }
 
   z_m1 <- unname(coef["log_m1"])
   z_m2 <- unname(coef["log_m2"])
   m1 <- clamp_exp(z_m1)
   m2 <- clamp_exp(z_m2)
+  d_m1 <- clamp_deriv(z_m1, m1)
+  d_m2 <- clamp_deriv(z_m2, m2)
+  side_m1 <- flag(d_m1, clamp_reached(z_m1))
+  side_m2 <- flag(d_m2, clamp_reached(z_m2))
   out <- list(
-    m1 = add(m1, "log_m1", clamp_deriv(z_m1, m1)),
-    m2 = add(m2, "log_m2", clamp_deriv(z_m2, m2))
+    m1 = add(m1, "log_m1", d_m1, !is.na(side_m1), side_m1),
+    m2 = add(m2, "log_m2", d_m2, !is.na(side_m2), side_m2)
   )
 
   if (family_code < 0L) return(out)
@@ -25,43 +86,148 @@
     span <- lamHi - lamLo
     value <- lamLo + span * (eps + (1 - 2 * eps) * sig)
     derivative <- span * (1 - 2 * eps) * sig * (1 - sig)
-    out$lam <- add(value, "z_dep", derivative)
+    # Frozen at the starting values, so the interval itself is the artefact,
+    # and the logistic compresses lam well before it reaches either end.
+    side <- flag(derivative, near_smooth_cap(value, lamLo, lamHi))
+    out$lam <- add(value, "z_dep", derivative, !is.na(side), side)
   } else if (family_code == 1L) {
-    theta <- if (abs(z) < 1e-8) if (z >= 0) 1e-8 else -1e-8 else z
-    derivative <- if (abs(z) < 1e-8) 0 else 1
-    out$theta <- add(theta, "z_dep", derivative)
+    # |theta| < FRANK_THETA_MAX is an overflow guard, not a property of the
+    # Frank family, whose theta is unbounded.
+    theta <- FRANK_THETA_MAX * tanh(z / FRANK_THETA_MAX)
+    derivative <- 1 - tanh(z / FRANK_THETA_MAX)^2
+    side <- flag(
+      derivative,
+      near_smooth_cap(theta, -FRANK_THETA_MAX, FRANK_THETA_MAX)
+    )
+    out$theta <- add(theta, "z_dep", derivative, !is.na(side), side)
     tau <- .frank_tau(theta)
     tau_derivative <- if (derivative == 0) {
       0
     } else {
       as.numeric(numDeriv::grad(.frank_tau, theta)) * derivative
     }
-    out$tau <- add(tau, "z_dep", tau_derivative)
+    # Kendall's tau is a monotone reparameterisation of the dependence
+    # parameter, so it is pinned exactly when that parameter is -- even though
+    # tau itself is nowhere near +/-1 (Frank's ceiling is only tau = 0.891).
+    tau_side <- if (out$theta$boundary) out$theta$side else flag(tau_derivative)
+    out$tau <- add(
+      tau, "z_dep", tau_derivative, !is.na(tau_side), tau_side
+    )
   } else if (family_code == 2L) {
+    # |rho| < 1 is the model's own domain, so there is no artificial cap here:
+    # only genuine saturation of tanh disqualifies the standard error.
     rho <- tanh(z)
     drho <- 1 - rho^2
-    out$rho <- add(rho, "z_dep", drho)
+    rho_side <- flag(drho)
+    out$rho <- add(rho, "z_dep", drho, !is.na(rho_side), rho_side)
+    tau <- 2 / pi * asin(rho)
+    # 2/pi * drho / sqrt(1 - rho^2) is 0/0 once tanh saturates; the limit of
+    # dtau/dz is 0 there, and leaving NaN would poison the report covariance.
+    tau_derivative <- if (drho <= 0) 0 else 2 / pi * drho / sqrt(1 - rho^2)
+    tau_side <- if (out$rho$boundary) out$rho$side else flag(tau_derivative)
     out$tau <- add(
-      2 / pi * asin(rho), "z_dep",
-      2 / pi * drho / sqrt(1 - rho^2)
+      tau, "z_dep", tau_derivative, !is.na(tau_side), tau_side
     )
   } else if (family_code == 3L) {
+    # exp() clamped at +/-20 in both R and the template.  The clamp is the
+    # identity inside (-20, 20), so proximity to it means nothing.
     theta <- clamp_exp(z)
     dtheta <- clamp_deriv(z, theta)
-    out$theta <- add(theta, "z_dep", dtheta)
+    theta_side <- flag(dtheta, clamp_reached(z))
+    out$theta <- add(
+      theta, "z_dep", dtheta, !is.na(theta_side), theta_side
+    )
+    tau <- theta / (theta + 2)
+    tau_derivative <- 2 * dtheta / (theta + 2)^2
+    tau_side <- if (out$theta$boundary) out$theta$side else flag(tau_derivative)
     out$tau <- add(
-      theta / (theta + 2), "z_dep",
-      2 * dtheta / (theta + 2)^2
+      tau, "z_dep", tau_derivative, !is.na(tau_side), tau_side
     )
   }
   out
+}
+
+#' Warn when a dependence estimate is pinned against its link's bound
+#'
+#' The estimate is then an artefact of the link, not of the data, and its
+#' delta-method standard error has already been set to NA.
+#' @keywords internal
+#' @noRd
+.warn_boundary_report <- function(boundary_report, family_code,
+                                   sides = NULL) {
+  dispersion <- intersect(boundary_report, c("m1", "m2"))
+  dependence <- setdiff(boundary_report, c("m1", "m2"))
+  if (!length(dispersion) && !length(dependence)) return(invisible(FALSE))
+  side_of <- function(item) {
+    if (is.null(sides) || !item %in% names(sides)) return(NA_character_)
+    unname(sides[[item]])
+  }
+
+  # Dispersion and dependence fail for unrelated reasons, so they get separate
+  # diagnoses.  Describing a clamped m1 as "pinned against the Frank link" and
+  # advising a different dependence family would both be false.  The two sides
+  # of the dispersion clamp also need opposite advice: at the lower clamp m -> 0
+  # and the margin is Poisson, at the upper clamp m is enormous and the margin
+  # is degenerately over-dispersed.  Recommending a Poisson margin there would
+  # be the opposite model.
+  for (side in unique(vapply(dispersion, side_of, character(1)))) {
+    items <- dispersion[vapply(dispersion, side_of, character(1)) %in% side]
+    remedy <- if (identical(side, "lower")) {
+      paste0(
+        "The margin is effectively Poisson; use poisson_1/poisson_2 to fit ",
+        "that exact limit instead."
+      )
+    } else if (identical(side, "upper")) {
+      paste0(
+        "The margin is degenerately over-dispersed, which usually means the ",
+        "mean model is badly misspecified or the counts are near-degenerate; ",
+        "a Poisson margin is not the remedy."
+      )
+    } else {
+      paste0(
+        "The delta-method derivative has collapsed, so the dispersion is not ",
+        "identified at this optimum."
+      )
+    }
+    warning(
+      "Dispersion estimate(s) ", paste(items, collapse = ", "),
+      " are pinned at the log-dispersion clamp (|log m| <= 20), so the ",
+      "estimate is set by the clamp rather than by the data and its standard ",
+      "error is reported as NA. ", remedy,
+      call. = FALSE
+    )
+  }
+  if (length(dependence)) {
+    cause <- switch(
+      as.character(family_code),
+      "0" = "the Famoye bounds frozen at the starting values",
+      "1" = sprintf(
+        "the Frank overflow guard (|theta| < %g)", FRANK_THETA_MAX
+      ),
+      "2" = "numerical saturation of the Gaussian link (|rho| = 1)",
+      "3" = "the Clayton exp() clamp",
+      "an implementation bound"
+    )
+    warning(
+      "Dependence estimate(s) ", paste(dependence, collapse = ", "),
+      " are pinned at a boundary of ", cause,
+      ". The estimates are constrained by the implementation rather than ",
+      "identified by the data, so their standard errors are reported as NA. ",
+      "Refit from different starting values, or use a dependence family whose ",
+      "range covers the association in these data.",
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
 }
 
 #' Frank Kendall tau using the template's fixed quadrature rule
 #' @keywords internal
 #' @noRd
 .frank_tau <- function(theta) {
-  if (abs(theta) < 1e-10) return(0)
+  if (abs(theta) < 1e-4) {
+    return(theta / 9 - theta^3 / 900)
+  }
   x20 <- c(
     0.9931285991850949, 0.9639719272779138, 0.9122344282513259,
     0.8391169718222188, 0.7463319064601508, 0.6360536807265150,
@@ -75,8 +241,10 @@
     0.1527533871307259
   )
   f <- function(t) {
-    value <- t / expm1(t)
-    value[!is.finite(value)] <- 0
+    near_zero <- abs(t) < 1e-6
+    value <- numeric(length(t))
+    value[near_zero] <- 1 - t[near_zero] / 2 + t[near_zero]^2 / 12
+    value[!near_zero] <- t[!near_zero] / expm1(t[!near_zero])
     value
   }
   upper <- theta * 0.5 * (1 + x20)
@@ -145,6 +313,10 @@
     index <- match(item$source, par_names)
     abs(item$derivative) * se[index]
   }, numeric(1))
+  boundary_report <- vapply(
+    report_items, `[[`, logical(1), "boundary"
+  )
+  report_sd[boundary_report] <- NA_real_
 
   report_covariance <- matrix(
     NA_real_, length(report_items), length(report_items),
@@ -163,6 +335,14 @@
     }
   } else if (mode == "diag") {
     diag(report_covariance) <- report_sd^2
+  }
+  # If a standard error has been withdrawn as unidentified, the corresponding
+  # covariances are unidentified too.  Leaving them numeric would let callers
+  # reconstruct exactly the quantity we just declared meaningless -- and on a
+  # non-positive-definite Hessian those entries can even be negative.
+  if (any(boundary_report)) {
+    report_covariance[boundary_report, ] <- NA_real_
+    report_covariance[, boundary_report] <- NA_real_
   }
 
   compact_sdreport <- structure(
@@ -185,7 +365,11 @@
     vcov_diag = if (mode == "full") NULL else covariance_diag,
     se = se,
     sdreport = compact_sdreport,
-    report = report_value
+    report = report_value,
+    boundary_report = names(report_items)[boundary_report],
+    boundary_sides = vapply(
+      report_items[boundary_report], `[[`, character(1), "side"
+    )
   )
 }
 

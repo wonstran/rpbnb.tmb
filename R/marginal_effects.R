@@ -27,6 +27,13 @@ rpbnb_tmb_marginal_effects <- function(fit,
                                        digits = 4L, ...) {
   which <- match.arg(which)
   type  <- match.arg(type)
+  if (!identical(fit$inference, "full") && !is.null(fit$rp_meta)) {
+    warning(
+      'Marginal-effect standard errors require the full covariance; ',
+      'refit with inference = "full". Point estimates are still returned.',
+      call. = FALSE
+    )
+  }
   res <- if (which == "both") {
     list(y1 = .me_one_eq(fit, 1L, type, vars, include_intercept, digits),
          y2 = .me_one_eq(fit, 2L, type, vars, include_intercept, digits))
@@ -34,7 +41,7 @@ rpbnb_tmb_marginal_effects <- function(fit,
     .me_one_eq(fit, if (which == "y1") 1L else 2L,
                type, vars, include_intercept, digits)
   }
-  res
+  invisible(res)
 }
 
 #' Elasticities for a rpbnb_tmb model
@@ -55,6 +62,13 @@ rpbnb_tmb_elasticities <- function(fit,
                                    digits = 4L, ...) {
   which <- match.arg(which)
   type  <- match.arg(type)
+  if (!identical(fit$inference, "full") && !is.null(fit$rp_meta)) {
+    warning(
+      'Elasticity standard errors require the full covariance; ',
+      'refit with inference = "full". Point estimates are still returned.',
+      call. = FALSE
+    )
+  }
   res <- if (which == "both") {
     list(y1 = .el_one_eq(fit, 1L, type, vars, include_intercept, digits),
          y2 = .el_one_eq(fit, 2L, type, vars, include_intercept, digits))
@@ -62,7 +76,7 @@ rpbnb_tmb_elasticities <- function(fit,
     .el_one_eq(fit, if (which == "y1") 1L else 2L,
                type, vars, include_intercept, digits)
   }
-  res
+  invisible(res)
 }
 
 # ---------------------------------------------------------------------------
@@ -155,11 +169,8 @@ rpbnb_tmb_elasticities <- function(fit,
     Z     <- fit$rp_meta[[paste0("Z", eq)]]
     dist  <- fit$rp_meta[[paste0("dist", eq)]]
     sign  <- fit$rp_meta[[paste0("sign", eq)]]
-    # Map distribution names to scale labels (mirrors rand_dist_registry)
     scale_lab <- vapply(dist, function(d) {
-      switch(d, normal = "log_sd", lognormal = "log_s",
-             uniform = "log_w", triangular = "log_w",
-             stop("unknown distribution: ", d))
+      rand_dist_registry[[d]]$scale_label
     }, character(1))
     scale_names <- paste0(scale_lab, eq, ":", cn[rand_idx])
     scales <- exp(fit$coef[scale_names])
@@ -230,8 +241,11 @@ rpbnb_tmb_elasticities <- function(fit,
     `Std. Error` = se,
     `z value` = res / se,
     `Pr(>|z|)` = 2 * pnorm(-abs(res / se)),
-    Type = ifelse(is_bin, if (quantity == "me") "binary" else "semi-elas",
-                  ifelse(is_bin, "binary", "continuous")),
+    Type = ifelse(
+      is_bin,
+      if (quantity == "me") "binary" else "semi-elas",
+      "continuous"
+    ),
     row.names = NULL, check.names = FALSE
   )
 

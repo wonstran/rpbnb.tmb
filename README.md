@@ -21,7 +21,7 @@ fit <- fit_rpbnb_tmb(
   control = rpbnb_tmb_control(
     n_cores = 4,
     max_threads = 4,
-    max_workload = 2e6
+    max_workload = 7e5
   )
 )
 ```
@@ -29,17 +29,64 @@ fit <- fit_rpbnb_tmb(
 Use `inference = "diag"` when only coefficient standard errors are required.
 This avoids retaining a full covariance matrix; `vcov(fit)` then has the
 estimated diagonal and `NA` off-diagonal entries. Use `inference = "none"` to
-skip Hessian construction entirely.
+skip Hessian construction entirely. Marginal-effect and elasticity
+standard errors require `inference = "full"`; the lighter modes return their
+point estimates with `NA` standard errors and an explicit warning.
 
 Use `keep = "compact"` for the smallest returned object when marginal effects
 are not needed. Use `keep = "full"` only for low-level diagnostics that require
 `fit$obj` or the response vectors.
 
-`max_threads` caps per-fit OpenMP concurrency because each thread can increase
-the active TMB memory footprint. `max_workload` rejects oversized
-observation-by-draw workloads before the automatic-differentiation tape is
-built. Set either limit higher deliberately when the available memory supports
-it; `max_workload = Inf` disables the workload guard.
+TMB tapes are constructed sequentially by default while objective and gradient
+evaluation remain parallel, which lowers peak memory without changing fitted
+results. Advanced users can opt into concurrent tape construction with
+`parallel_tape = TRUE`; peak memory then scales with the thread count, so
+`max_threads` caps per-fit concurrency.
+
+`max_workload` rejects oversized observation-by-draw workloads before the
+automatic-differentiation tape is built. Every constant behind it is measured
+by `inst/benchmark_memory.R`, whose raw results are committed to
+`inst/extdata/memory_calibration.csv`; `TAPE_CALIBRATION` in `R/utilities.R` is
+the single source that the guard, the default, and the documentation all derive
+from.
+
+The budget is set on **peak** working set rather than retained tape, because
+peak is what exhausts memory: TMB records the whole likelihood before pruning
+it to each parallel region, so peak runs about 6.1x the retained footprint —
+roughly 12 kB per weighted observation-draw. The default of `7e5` units
+therefore targets about 8 GiB of peak memory for one fit.
+
+Families differ, so each carries a measured weight (the largest ratio to Famoye
+at matched workload):
+
+| family | weight |
+|---|---|
+| independence | 0.7 |
+| famoye | 1.0 |
+| frank | **2.9** |
+| gaussian | 1.1 |
+| clayton | 1.0 |
+
+Frank is nearly three times Famoye per unit, so a Frank fit buys proportionally
+fewer draws for the same memory. Raise `max_workload` deliberately against the
+memory you actually have — `inst/fit_rpbnb_diff_copula.R` shows that opt-in —
+and `max_workload = Inf` disables the guard.
+
+## Boundary-constrained dependence estimates
+
+Every dependence link is bounded — the Famoye admissible interval, Frank's
+`|theta| < 35` (Kendall's tau up to about 0.891), Gaussian's `|rho| < 1`, and
+Clayton's clamped exponential. When an estimate is pinned against one of these
+bounds it is determined by the link rather than by the data, and its
+delta-method standard error collapses toward zero. Such estimates are reported
+with `NA` standard errors, listed in `fit$boundary_report`, and accompanied by
+a warning. For Famoye fits, `fit$lambda_bounds` records the frozen admissible
+interval so the constraint is inspectable. Treat a flagged fit as evidence that
+the dependence family does not span the association in the data.
+
+`predict(fit)` returns a two-column matrix of integrated fitted means.
+`predict(fit, newdata = ..., type = "link")` supports new data and returns the
+log of the integrated means.
 
 The Gaussian copula's 20-point bivariate-normal quadrature is represented by a
 thread-safe atomic TMB operation. Its value, gradient, and Hessian remain

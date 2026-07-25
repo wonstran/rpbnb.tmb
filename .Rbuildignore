@@ -1,2 +1,13 @@
 ^.*\.Rproj$
 ^\.Rproj\.user$
+^\.git$
+^\.rlib$
+^\.worktrees$
+^\.superpowers$
+^\.agents$
+^comments$
+^dist$
+^docs$
+^LICENSE\.md$
+^\.\.Rcheck$
+^.*\.tar\.gz$

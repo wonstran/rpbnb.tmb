@@ -22,13 +22,19 @@ library(rpbnb.tmb)
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- Settings ---------------------------------------------------------------
+# Frank costs about 2.9x Famoye per observation-draw (see TAPE_CALIBRATION /
+# inst/benchmark_memory.R), so the same memory budget buys proportionally
+# fewer draws. 3874 obs x 100 draws x 2.9 is ~1.1e6 weighted units; raise
+# max_workload deliberately if you have the memory for more.
 n_obs <- 5000L
-draws <- 400L
+draws <- 100L
 n_cores <- 8 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
-data <- read.csv(file.path("data", "rwm1984_bnb.csv"))
+data <- read.csv(system.file(
+  "extdata", "rwm1984_bnb.csv", package = "rpbnb.tmb", mustWork = TRUE
+))
 data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]
 cat("=== RP-BNB (different formulas, Frank copula) on rwm1984 health counts ===\n")
 cat("Observations :", nrow(data), "\n")
@@ -57,7 +63,12 @@ t_fit <- system.time(
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
-      n_cores     = n_cores
+      n_cores     = n_cores,
+      # 3874 x 100 x 2.9 = 1.1e6 weighted units, above the 7e5 default. This
+      # is the deliberate opt-in the documentation asks for, not a workaround:
+      # at ~12 kB peak per unit it commits to roughly 13 GiB. Lower `draws` if
+      # you have less memory than that.
+      max_workload = 1.2e6
     )
   )
 )[["elapsed"]]
@@ -82,9 +93,7 @@ summary(fit)
 
 # ---- 4. Fitted means (predict) ----------------------------------------------
 sep(); cat("FITTED MEANS (predict) -- first 6 observations\n"); sep()
-cat("(predict.rpbnb_tmb_fit currently returns the raw coefficients;\n",
-    " fitted means are available as fit$mu1 / fit$mu2)\n", sep = "")
-print(head(data.frame(mu1 = fit$mu1, mu2 = fit$mu2)))
+print(head(predict(fit)))
 
 # ---- 5. Dependence (copula report) ------------------------------------------
 sep(); cat("DEPENDENCE (sdreport)\n"); sep()
