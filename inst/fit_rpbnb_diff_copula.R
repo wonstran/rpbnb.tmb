@@ -22,8 +22,12 @@ library(rpbnb.tmb)
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- Settings ---------------------------------------------------------------
+# Frank costs about 2.9x Famoye per observation-draw (see TAPE_CALIBRATION /
+# inst/benchmark_memory.R), so the same memory budget buys proportionally
+# fewer draws. 3874 obs x 100 draws x 2.9 is ~1.1e6 weighted units; raise
+# max_workload deliberately if you have the memory for more.
 n_obs <- 5000L
-draws <- 400L
+draws <- 100L
 n_cores <- 8 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
@@ -59,7 +63,12 @@ t_fit <- system.time(
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
-      n_cores     = n_cores
+      n_cores     = n_cores,
+      # 3874 x 100 x 2.9 = 1.1e6 weighted units, above the 7e5 default. This
+      # is the deliberate opt-in the documentation asks for, not a workaround:
+      # at ~12 kB peak per unit it commits to roughly 13 GiB. Lower `draws` if
+      # you have less memory than that.
+      max_workload = 1.2e6
     )
   )
 )[["elapsed"]]

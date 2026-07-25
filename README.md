@@ -21,7 +21,7 @@ fit <- fit_rpbnb_tmb(
   control = rpbnb_tmb_control(
     n_cores = 4,
     max_threads = 4,
-    max_workload = 2e6
+    max_workload = 7e5
   )
 )
 ```
@@ -44,22 +44,33 @@ results. Advanced users can opt into concurrent tape construction with
 `max_threads` caps per-fit concurrency.
 
 `max_workload` rejects oversized observation-by-draw workloads before the
-automatic-differentiation tape is built. One unit is one observation-draw.
-Measured on a 12-point grid (n from 500 to 4000, draws from 50 to 200, single
-threaded), tape size depends on `n * draws` alone to within 2.6%:
+automatic-differentiation tape is built. Every constant behind it is measured
+by `inst/benchmark_memory.R`, whose raw results are committed to
+`inst/extdata/memory_calibration.csv`; `TAPE_CALIBRATION` in `R/utilities.R` is
+the single source that the guard, the default, and the documentation all derive
+from.
 
-```
-tape (MB) = 17.7 + 0.001117 * units          R^2 = 0.999
-```
+The budget is set on **peak** working set rather than retained tape, because
+peak is what exhausts memory: TMB records the whole likelihood before pruning
+it to each parallel region, so peak runs about 6.1x the retained footprint —
+roughly 12 kB per weighted observation-draw. The default of `7e5` units
+therefore targets about 8 GiB of peak memory for one fit.
 
-The slope is 1171 bytes per unit overall, rising to about 1215 over the largest
-workloads — the conservative figure the default is set from. All dependence
-families carry weight 1; the Gaussian copula tape is 7–9% *smaller* than
-Famoye's at matched workload, because the atomic bivariate-normal kernel
-compresses its quadrature. The default of `2e6` units admits fits whose tape
-reaches roughly 2.3 GB, with objective and gradient evaluation adding about
-another 55% for a working footprint near 3.5 GB. Raise it deliberately against
-the memory you actually have; `max_workload = Inf` disables the guard.
+Families differ, so each carries a measured weight (the largest ratio to Famoye
+at matched workload):
+
+| family | weight |
+|---|---|
+| independence | 0.7 |
+| famoye | 1.0 |
+| frank | **2.9** |
+| gaussian | 1.1 |
+| clayton | 1.0 |
+
+Frank is nearly three times Famoye per unit, so a Frank fit buys proportionally
+fewer draws for the same memory. Raise `max_workload` deliberately against the
+memory you actually have — `inst/fit_rpbnb_diff_copula.R` shows that opt-in —
+and `max_workload = Inf` disables the guard.
 
 ## Boundary-constrained dependence estimates
 

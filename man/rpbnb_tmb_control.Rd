@@ -10,7 +10,7 @@ rpbnb_tmb_control(
   print_level = 0L,
   n_cores = 1L,
   max_threads = 4L,
-  max_workload = 2e+06,
+  max_workload = .calibration_default_workload(),
   parallel_tape = FALSE,
   halton_burn = 300L
 )
@@ -27,31 +27,19 @@ rpbnb_tmb_control(
 \item{max_threads}{Maximum OpenMP threads permitted for one fit. Increase
 explicitly to opt into a larger memory footprint.}
 
-\item{max_workload}{Maximum weighted observation-draw evaluations permitted
-before TMB tape construction. Use \code{Inf} to disable the guard.
+\item{max_workload}{Maximum weighted observation-draw evaluations permitted before TMB tape construction; \code{Inf} disables the guard. The default and every figure here are derived from \code{TAPE_CALIBRATION}, so this text cannot drift from the shipped behaviour.
 
-One unit is one observation-draw. Measured on a 12-point grid (n from 500
-to 4000, draws from 50 to 200, single-threaded), tape size depends on
-\code{n * draws} alone to within 2.6\% and is well described by
+With the default \code{parallel_tape = FALSE} the budget is per fit; with \code{parallel_tape = TRUE} the tapes are built concurrently and the guard multiplies the workload by the realized thread count.
 
-\deqn{\mathrm{tape\ (MB)} \approx 17.7 + 0.001117 \times \mathrm{units}}
+One unit is one weighted observation-draw. All figures are measured by \code{inst/benchmark_memory.R}, whose raw results are stored in \code{inst/extdata/memory_calibration.csv}.
 
-with \eqn{R^2 = 0.999}. The slope is 1171 bytes per unit overall and
-rises to about 1215 bytes per unit over the largest workloads, which is
-the figure the default is set from; per-unit cost is higher at very small
-workloads because of the fixed 17.7 MB intercept. The copula families are
-not more expensive than Famoye -- the Gaussian tape is 7-9\% smaller at
-matched workload -- so all families carry weight 1.
+Retained tape size depends on \code{n * draws} alone: tape (MiB) = 13.374 + 0.001164 * units, with R^2 = 0.9994 (1221 bytes per unit over the largest workloads; per-unit cost is higher at small workloads because of the fixed intercept).
 
-The default of \code{2e6} units therefore admits fits whose tape reaches
-roughly 2.3 GB; objective and gradient evaluation add about another 55\%,
-for a working footprint near 3.5 GB. Raise it deliberately against the
-memory you actually have, not to make one particular dataset fit.
+The budget is set on \emph{peak} working set, not on retained tape, because peak is what exhausts memory: TMB records the whole likelihood before pruning it to each parallel region, so peak runs about 6.11 times the retained footprint, or 12083 bytes per unit. The default of 700,000 units therefore targets a peak of about 8 GiB for one fit.
 
-With the default \code{parallel_tape = FALSE} the budget is per fit. With
-\code{parallel_tape = TRUE} the tapes are built concurrently, so the guard
-multiplies the workload by the realized thread count and the budget above
-is shared across them.}
+Families cost different amounts per unit, so each carries a weight -- the largest ratio to Famoye observed at matched workload: independence 0.7, famoye 1, frank 2.9, gaussian 1.1, clayton 1. Frank is nearly three times Famoye, so treating it as unweighted would under-budget it threefold.
+
+Raise \code{max_workload} deliberately against the memory you actually have, not to make one particular dataset fit.}
 
 \item{parallel_tape}{Construct per-thread TMB tapes concurrently. The
 default \code{FALSE} constructs them sequentially to reduce peak memory;

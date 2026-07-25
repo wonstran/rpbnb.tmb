@@ -67,14 +67,14 @@
 .check_tmb_workload <- function(n, draws, family_code, max_workload,
                                 n_threads = 1L, parallel_tape = FALSE) {
   if (is.infinite(max_workload)) return(invisible(0))
-  # Measured on a 12-point grid (n in 500..4000, draws in 50..200, one thread):
-  # tape size depends on n * draws alone to within 2.6%, and the copula
-  # families are no more expensive than Famoye -- the Gaussian tape is actually
-  # 7-9% smaller at matched workload, because the atomic bivariate-normal
-  # kernel compresses its quadrature.  An earlier 1.25 weight came from two
-  # measurements taken while another job was competing for memory; a clean
-  # sequential grid does not reproduce it.
-  family_weight <- 1
+  # Weights are measured, not assumed: see TAPE_CALIBRATION and
+  # inst/benchmark_memory.R.  Frank costs ~2.9x Famoye per unit; Gaussian and
+  # Clayton are close to 1; independence is cheaper.  A previous revision
+  # generalised "weight 1" to every family from Famoye and Gaussian
+  # measurements alone, which under-budgeted Frank threefold.
+  family_weight <- unname(TAPE_CALIBRATION$family_weight[[
+    match(family_code, c(-1L, 0L, 1L, 2L, 3L))
+  ]])
   tape_multiplier <- if (isTRUE(parallel_tape)) as.double(n_threads) else 1
   workload <- as.double(n) * as.double(draws) *
     family_weight * tape_multiplier

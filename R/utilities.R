@@ -13,6 +13,99 @@ POISSON_M <- 1e-6
 #' @noRd
 FRANK_THETA_MAX <- 35
 
+#' Measured tape-memory calibration
+#'
+#' The single source for every number in the `max_workload` safety contract:
+#' the guard reads the family weights from here, `rpbnb_tmb_control()` derives
+#' its default from `budget_gib` and `bytes_per_unit`, and the documentation is
+#' generated from this object by `.calibration_doc()`. Nothing restates these
+#' figures, so the code and the documentation cannot drift apart.
+#'
+#' Regenerate with `Rscript inst/benchmark_memory.R`, which writes the raw
+#' measurements to `inst/extdata/memory_calibration.csv` and prints the
+#' regression these constants come from. Re-run it after any template, TMB,
+#' compiler or allocator change.
+#'
+#' @keywords internal
+#' @noRd
+TAPE_CALIBRATION <- list(
+  # Retained tape, Famoye: tape_MiB = 13.374 + 0.0011332 * units, R^2 = 0.9994.
+  tape_bytes_per_unit = 1221,
+  tape_intercept_mib = 13.374,
+  tape_r_squared = 0.9994,
+  # PEAK working set is what actually causes std::bad_alloc -- the failure that
+  # started this guard -- and it runs about 6.1x the retained footprint,
+  # because TMB records the full likelihood before pruning to each region.
+  # The budget is therefore set on peak, not on tape.
+  peak_bytes_per_unit = 12083,
+  peak_over_retained = 6.11,
+  budget_gib = 8,
+  # Conservative: the largest ratio to Famoye observed at matched workload.
+  # Frank really is ~2.9x -- a weight-1 assumption for it would under-budget
+  # by nearly threefold.
+  family_weight = c(
+    independence = 0.7, famoye = 1.0, frank = 2.9,
+    gaussian = 1.1, clayton = 1.0
+  ),
+  measured_families = c(
+    "independence", "famoye", "frank", "gaussian", "clayton"
+  ),
+  source = "inst/benchmark_memory.R"
+)
+
+#' Documentation text generated from TAPE_CALIBRATION
+#' @keywords internal
+#' @noRd
+.calibration_doc <- function(calibration = TAPE_CALIBRATION) {
+  weights <- calibration$family_weight
+  paste0(
+    "@param max_workload Maximum weighted observation-draw evaluations ",
+    "permitted before TMB tape construction; \\code{Inf} disables the guard. ",
+    "The default and every figure here are derived from ",
+    "\\code{TAPE_CALIBRATION}, so this text cannot drift from the shipped ",
+    "behaviour.\n\n",
+    "With the default \\code{parallel_tape = FALSE} the budget is per fit; ",
+    "with \\code{parallel_tape = TRUE} the tapes are built concurrently and ",
+    "the guard multiplies the workload by the realized thread count.\n\n",
+    "One unit is one weighted observation-draw. All figures are measured by ",
+    "\\code{", calibration$source, "}, whose raw results are stored in ",
+    "\\code{inst/extdata/memory_calibration.csv}.\n\n",
+    "Retained tape size depends on \\code{n * draws} alone: ",
+    "tape (MiB) = ", format(calibration$tape_intercept_mib, digits = 5),
+    " + ", format(calibration$tape_bytes_per_unit / 1024^2, digits = 4),
+    " * units, with R^2 = ", format(calibration$tape_r_squared, digits = 5),
+    " (", calibration$tape_bytes_per_unit, " bytes per unit over the largest ",
+    "workloads; per-unit cost is higher at small workloads because of the ",
+    "fixed intercept).\n\n",
+    "The budget is set on \\emph{peak} working set, not on retained tape, ",
+    "because peak is what exhausts memory: TMB records the whole likelihood ",
+    "before pruning it to each parallel region, so peak runs about ",
+    calibration$peak_over_retained, " times the retained footprint, or ",
+    calibration$peak_bytes_per_unit, " bytes per unit. The default of ",
+    format(.calibration_default_workload(calibration),
+           scientific = FALSE, big.mark = ","),
+    " units therefore targets a peak of about ", calibration$budget_gib,
+    " GiB for one fit.\n\n",
+    "Families cost different amounts per unit, so each carries a weight -- ",
+    "the largest ratio to Famoye observed at matched workload: ",
+    paste(sprintf("%s %g", names(weights), weights), collapse = ", "),
+    ". Frank is nearly three times Famoye, so treating it as unweighted would ",
+    "under-budget it threefold.\n\n",
+    "Raise \\code{max_workload} deliberately against the memory you actually ",
+    "have, not to make one particular dataset fit."
+  )
+}
+
+#' Default workload budget implied by the calibration
+#'
+#' Derived, not restated: `rpbnb_tmb_control()` uses this for its default so
+#' the published constants and the shipped behaviour cannot disagree.
+#' @keywords internal
+#' @noRd
+.calibration_default_workload <- function(calibration = TAPE_CALIBRATION) {
+  signif(calibration$budget_gib * 1024^3 / calibration$peak_bytes_per_unit, 1)
+}
+
 #' @keywords internal
 #' @noRd
 .chk_poisson_flag <- function(x, arg) {
@@ -247,31 +340,7 @@ copula <- function(family, par = NULL) {
 #' @param n_cores Number of OpenMP threads for TMB.
 #' @param max_threads Maximum OpenMP threads permitted for one fit. Increase
 #'   explicitly to opt into a larger memory footprint.
-#' @param max_workload Maximum weighted observation-draw evaluations permitted
-#'   before TMB tape construction. Use \code{Inf} to disable the guard.
-#'
-#'   One unit is one observation-draw. Measured on a 12-point grid (n from 500
-#'   to 4000, draws from 50 to 200, single-threaded), tape size depends on
-#'   \code{n * draws} alone to within 2.6% and is well described by
-#'
-#'   \deqn{\mathrm{tape\ (MB)} \approx 17.7 + 0.001117 \times \mathrm{units}}
-#'
-#'   with \eqn{R^2 = 0.999}. The slope is 1171 bytes per unit overall and
-#'   rises to about 1215 bytes per unit over the largest workloads, which is
-#'   the figure the default is set from; per-unit cost is higher at very small
-#'   workloads because of the fixed 17.7 MB intercept. The copula families are
-#'   not more expensive than Famoye -- the Gaussian tape is 7-9% smaller at
-#'   matched workload -- so all families carry weight 1.
-#'
-#'   The default of \code{2e6} units therefore admits fits whose tape reaches
-#'   roughly 2.3 GB; objective and gradient evaluation add about another 55%,
-#'   for a working footprint near 3.5 GB. Raise it deliberately against the
-#'   memory you actually have, not to make one particular dataset fit.
-#'
-#'   With the default \code{parallel_tape = FALSE} the budget is per fit. With
-#'   \code{parallel_tape = TRUE} the tapes are built concurrently, so the guard
-#'   multiplies the workload by the realized thread count and the budget above
-#'   is shared across them.
+#' @eval .calibration_doc()
 #' @param parallel_tape Construct per-thread TMB tapes concurrently. The
 #'   default \code{FALSE} constructs them sequentially to reduce peak memory;
 #'   objective and gradient evaluation remains parallel.
@@ -282,7 +351,8 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               print_level = 0L,
                               n_cores = 1L,
                               max_threads = 4L,
-                              max_workload = 2e6,
+                              max_workload =
+                                .calibration_default_workload(),
                               parallel_tape = FALSE,
                               halton_burn = 300L) {
   if (length(n_cores) != 1L || !is.numeric(n_cores) ||

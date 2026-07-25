@@ -118,16 +118,17 @@ test_that("TMB tape construction is sequential unless explicitly enabled", {
 })
 
 test_that("the workload guard rejects exactly at its limit and opts out", {
-  # n * draws = 1000 for every family, since all weights are 1.
+  limit <- 100 * 10 * TAPE_CALIBRATION$family_weight[["gaussian"]]
   expect_error(
     .check_tmb_workload(
-      n = 100L, draws = 10L, family_code = 2L, max_workload = 999
+      n = 100L, draws = 10L, family_code = 2L,
+      max_workload = limit - 1
     ),
     "max_workload"
   )
   expect_no_error(
     .check_tmb_workload(
-      n = 100L, draws = 10L, family_code = 2L, max_workload = 1000
+      n = 100L, draws = 10L, family_code = 2L, max_workload = limit
     )
   )
   expect_no_error(
@@ -139,25 +140,32 @@ test_that("the workload guard rejects exactly at its limit and opts out", {
 })
 
 test_that("concurrent taping, and only that, multiplies the budget", {
+  weights <- TAPE_CALIBRATION$family_weight
+  families <- c(independence = -1L, famoye = 0L, frank = 1L,
+                gaussian = 2L, clayton = 3L)
+
   # Sequential taping: the thread count is irrelevant to the guard.
-  for (family_code in c(-1L, 0L, 1L, 2L, 3L)) {
+  for (nm in names(families)) {
+    limit <- 1000 * 400 * weights[[nm]]
     expect_no_error(.check_tmb_workload(
-      n = 1000L, draws = 400L, family_code = family_code,
-      max_workload = 400000, n_threads = 8L, parallel_tape = FALSE
+      n = 1000L, draws = 400L, family_code = families[[nm]],
+      max_workload = limit, n_threads = 8L, parallel_tape = FALSE
     ))
     expect_error(.check_tmb_workload(
-      n = 1000L, draws = 400L, family_code = family_code,
-      max_workload = 399999, n_threads = 8L, parallel_tape = FALSE
+      n = 1000L, draws = 400L, family_code = families[[nm]],
+      max_workload = limit - 1, n_threads = 8L, parallel_tape = FALSE
     ), "max_workload")
   }
+
   # Concurrent taping: n_threads full-size recordings are alive at once.
+  concurrent <- 1000 * 400 * weights[["famoye"]] * 8
   expect_error(.check_tmb_workload(
-    n = 1000L, draws = 400L, family_code = 1L,
-    max_workload = 3199999, n_threads = 8L, parallel_tape = TRUE
+    n = 1000L, draws = 400L, family_code = 0L,
+    max_workload = concurrent - 1, n_threads = 8L, parallel_tape = TRUE
   ), "max_workload")
   expect_no_error(.check_tmb_workload(
-    n = 1000L, draws = 400L, family_code = 1L,
-    max_workload = 3200000, n_threads = 8L, parallel_tape = TRUE
+    n = 1000L, draws = 400L, family_code = 0L,
+    max_workload = concurrent, n_threads = 8L, parallel_tape = TRUE
   ))
 })
 
@@ -177,12 +185,15 @@ test_that("the workload guard is linear in its inputs", {
   expect_equal(base, 1e5)
   expect_equal(cost(2000L, 100L, 0L), 2 * base)
   expect_equal(cost(1000L, 200L, 0L), 2 * base)
-  # A measured grid shows tape size depends on n * draws alone, with the
-  # copula families no more expensive than Famoye, so every family weighs 1.
-  expect_equal(cost(1000L, 100L, 1L), base)
-  expect_equal(cost(1000L, 100L, 2L), base)
-  expect_equal(cost(1000L, 100L, 3L), base)
-  expect_equal(cost(1000L, 100L, -1L), base)
+  # Family weights are measured, not assumed, and they differ: Frank costs
+  # about 2.9x Famoye per unit.  The guard must read them from the single
+  # calibration source rather than hard-coding any of them.
+  weights <- TAPE_CALIBRATION$family_weight
+  expect_equal(cost(1000L, 100L, -1L), weights[["independence"]] * base)
+  expect_equal(cost(1000L, 100L, 1L), weights[["frank"]] * base)
+  expect_equal(cost(1000L, 100L, 2L), weights[["gaussian"]] * base)
+  expect_equal(cost(1000L, 100L, 3L), weights[["clayton"]] * base)
+  expect_gt(weights[["frank"]], 2)
 })
 
 test_that("threads multiply the workload only under concurrent taping", {
@@ -196,23 +207,64 @@ test_that("threads multiply the workload only under concurrent taping", {
   expect_equal(cost(n_threads = 8L, parallel_tape = TRUE), 8e5)
 })
 
-test_that("the default budget matches the memory model it is documented from", {
-  # Asserting that one particular dataset fits under the limit locks in a
-  # coincidence and goes stale when the dataset changes.  Assert the actual
-  # contract instead: the default is derived from a measured bytes-per-unit
-  # figure and a stated tape budget, so those three numbers must agree.
-  #
-  # Measured on a 12-point grid (n 500..4000, draws 50..200, one thread):
-  #   tape_MB = 17.7 + 0.001117 * units,  R^2 = 0.999
-  # with the slope rising to ~1215 bytes/unit over the largest workloads,
-  # which is the conservative figure the default is set from.
-  bytes_per_unit <- 1215
-  documented_budget_gb <- 2.3
+test_that("the default is derived from the calibration, not restated", {
+  # An earlier version of this test defined its own copies of the constants and
+  # checked their arithmetic, so editing the published numbers left it green.
+  # The contract that matters is that the shipped default IS the calibration's
+  # derived value -- there is only one copy of each number in the package.
+  expect_identical(
+    rpbnb_tmb_control()$max_workload,
+    .calibration_default_workload()
+  )
+  expect_equal(
+    .calibration_default_workload() *
+      TAPE_CALIBRATION$peak_bytes_per_unit / 1024^3,
+    TAPE_CALIBRATION$budget_gib,
+    tolerance = 0.05
+  )
+})
 
-  default_units <- rpbnb_tmb_control()$max_workload
-  implied_gb <- default_units * bytes_per_unit / 1024^3
+test_that("the documentation is generated from the calibration", {
+  # `@eval .calibration_doc()` means the Rd text cannot drift from the
+  # constants: it is produced from them at roxygenise time.  Assert the
+  # generator actually reports the shipped values, so a silently edited
+  # constant shows up as changed documentation rather than a stale claim.
+  doc <- .calibration_doc()
+  expect_match(doc, as.character(TAPE_CALIBRATION$peak_bytes_per_unit),
+               fixed = TRUE)
+  expect_match(doc, as.character(TAPE_CALIBRATION$tape_bytes_per_unit),
+               fixed = TRUE)
+  expect_match(doc, format(.calibration_default_workload(),
+                           scientific = FALSE, big.mark = ","), fixed = TRUE)
+  expect_match(doc, "frank 2.9", fixed = TRUE)
+  # Every family the guard can be asked about must be a measured one.
+  expect_setequal(
+    names(TAPE_CALIBRATION$family_weight), TAPE_CALIBRATION$measured_families
+  )
+})
 
-  expect_equal(implied_gb, documented_budget_gb, tolerance = 0.05)
+test_that("the committed calibration data backs the published constants", {
+  path <- system.file("extdata", "memory_calibration.csv",
+                      package = "rpbnb.tmb")
+  skip_if(path == "", "calibration data not installed")
+  raw <- utils::read.csv(path)
+
+  # Every family carrying a weight was actually measured.
+  expect_setequal(
+    sort(unique(raw$family)), sort(TAPE_CALIBRATION$measured_families)
+  )
+  # And the published weights are no smaller than the observed ratios.
+  famoye <- aggregate(tape_mib ~ units, subset(raw, family == "famoye"), mean)
+  for (fam in setdiff(unique(raw$family), "famoye")) {
+    cells <- subset(raw, family == fam)
+    ratios <- vapply(seq_len(nrow(cells)), function(i) {
+      base <- famoye$tape_mib[famoye$units == cells$units[i]]
+      if (length(base)) cells$tape_mib[i] / base else NA_real_
+    }, numeric(1))
+    expect_gte(
+      TAPE_CALIBRATION$family_weight[[fam]], max(ratios, na.rm = TRUE) - 1e-8
+    )
+  }
 })
 
 test_that("TMB thread configuration realizes a valid request", {
