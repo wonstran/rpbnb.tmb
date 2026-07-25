@@ -106,6 +106,114 @@ TAPE_CALIBRATION <- list(
   signif(calibration$budget_gib * 1024^3 / calibration$peak_bytes_per_unit, 1)
 }
 
+#' Available system memory, in GiB
+#'
+#' Best-effort and platform-specific. Every code path is wrapped so failure
+#' -- a missing binary, a locale-mangled number, a sandbox that blocks
+#' subprocess execution, an unrecognized OS -- degrades to `NA_real_` rather
+#' than propagating an error. This return value feeds a default argument
+#' (`rpbnb_tmb_control()`'s `max_workload`, by way of
+#' `rpbnb_tmb_max_workload()`); a default argument that can error breaks
+#' every caller who doesn't override it.
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib <- function() {
+  sysname <- tryCatch(Sys.info()[["sysname"]], error = function(e) NA_character_)
+  if (is.na(sysname)) return(NA_real_)
+
+  gib <- tryCatch({
+    if (identical(sysname, "Linux")) {
+      .detect_available_memory_gib_linux()
+    } else if (identical(sysname, "Darwin")) {
+      .detect_available_memory_gib_darwin()
+    } else if (identical(sysname, "Windows")) {
+      .detect_available_memory_gib_windows()
+    } else {
+      NA_real_
+    }
+  }, error = function(e) NA_real_)
+
+  if (length(gib) != 1L || !is.numeric(gib) || is.na(gib) ||
+      !is.finite(gib) || gib < 0) {
+    return(NA_real_)
+  }
+  gib
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_linux <- function() {
+  path <- "/proc/meminfo"
+  if (!file.exists(path)) return(NA_real_)
+  lines <- readLines(path, warn = FALSE)
+  # MemAvailable is the kernel's own reclaimable-cache-aware estimate of what
+  # can actually be handed to a new allocation; MemFree alone systematically
+  # undercounts memory the kernel would reclaim on request. Fall back to
+  # MemFree only on very old kernels that lack MemAvailable.
+  value_kib <- .parse_meminfo_field(lines, "MemAvailable")
+  if (is.na(value_kib)) value_kib <- .parse_meminfo_field(lines, "MemFree")
+  if (is.na(value_kib)) return(NA_real_)
+  value_kib / 1024^2
+}
+
+#' @keywords internal
+#' @noRd
+.parse_meminfo_field <- function(lines, field) {
+  pattern <- paste0("^", field, ":\\s*([0-9]+)\\s*kB")
+  hit <- grep(pattern, lines, value = TRUE)
+  if (!length(hit)) return(NA_real_)
+  as.numeric(sub(pattern, "\\1", hit[1L]))
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_darwin <- function() {
+  vm <- tryCatch(system2("vm_stat", stdout = TRUE, stderr = FALSE),
+                 error = function(e) character(0))
+  if (!length(vm)) return(NA_real_)
+
+  page_size_line <- grep("page size of", vm, value = TRUE)
+  page_size <- if (length(page_size_line)) {
+    as.numeric(sub(".*page size of ([0-9]+) bytes.*", "\\1", page_size_line[1L]))
+  } else {
+    4096  # Documented default when the header line's wording ever changes.
+  }
+  if (is.na(page_size) || page_size <= 0) return(NA_real_)
+
+  free_pages <- .parse_vm_stat_field(vm, "Pages free")
+  inactive_pages <- .parse_vm_stat_field(vm, "Pages inactive")
+  if (is.na(free_pages) || is.na(inactive_pages)) return(NA_real_)
+
+  (free_pages + inactive_pages) * page_size / 1024^3
+}
+
+#' @keywords internal
+#' @noRd
+.parse_vm_stat_field <- function(lines, field) {
+  pattern <- paste0("^", field, ":\\s*([0-9]+)\\.?")
+  hit <- grep(pattern, lines, value = TRUE)
+  if (!length(hit)) return(NA_real_)
+  as.numeric(sub(pattern, "\\1", hit[1L]))
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_windows <- function() {
+  out <- tryCatch(
+    system2("wmic", c("OS", "get", "FreePhysicalMemory", "/value"),
+            stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  )
+  if (!length(out)) return(NA_real_)
+  hit <- grep("^FreePhysicalMemory=", out, value = TRUE)
+  if (!length(hit)) return(NA_real_)
+  value_kib <- suppressWarnings(
+    as.numeric(sub("^FreePhysicalMemory=", "", hit[1L]))
+  )
+  if (is.na(value_kib)) return(NA_real_)
+  value_kib / 1024^2
+}
+
 #' @keywords internal
 #' @noRd
 .chk_poisson_flag <- function(x, arg) {
