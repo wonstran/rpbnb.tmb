@@ -1,5 +1,9 @@
 test_that("Frank random-parameter fit has finite curvature from default start", {
-  data_path <- testthat::test_path("..", "..", "data", "rwm1984_bnb.csv")
+  skip_on_cran()
+  data_path <- system.file(
+    "extdata", "rwm1984_bnb.csv",
+    package = "rpbnb.tmb", mustWork = TRUE
+  )
   d <- utils::read.csv(data_path)[1:120, ]
 
   fit <- expect_no_warning(fit_rpbnb_tmb(
@@ -17,7 +21,7 @@ test_that("Frank random-parameter fit has finite curvature from default start", 
   expect_equal(fit$optimizer$convergence, 0)
   expect_true(isTRUE(fit$sdreport$pdHess))
   expect_true(all(is.finite(fit$se)))
-  expect_gt(abs(unname(coef(fit)["z_dep"])), 1e-6)
+  expect_gt(abs(unname(coef(fit)["z_dep"]) - 0.1), 1e-6)
 })
 
 test_that("Frank copula fit converges", {

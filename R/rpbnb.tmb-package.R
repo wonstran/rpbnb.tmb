@@ -4,10 +4,10 @@
 #' negative binomial models using Template Model Builder (TMB). Supports
 #' Famoye/Sarmanov and discrete-copula (Frank, Gaussian, Clayton) dependence.
 #'
-#' @docType package
-#' @name rpbnb.tmb-package
-NULL
-
-#' @importFrom stats nlminb coef vcov logLik AIC BIC predict
+#' @keywords internal
+#' @importFrom stats AIC BIC coef dnbinom logLik nlminb pnbinom pnorm predict
+#' @importFrom stats qnbinom qnorm rnbinom rnorm runif symnum vcov
+#' @importFrom numDeriv jacobian
 #' @importFrom TMB MakeADFun
-NULL
+#' @useDynLib rpbnb.tmb, .registration = TRUE
+"_PACKAGE"

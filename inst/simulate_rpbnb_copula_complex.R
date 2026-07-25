@@ -78,19 +78,22 @@ cat(sprintf("Spearman(y1, y2) = %.4f (positive copula dependence built in)\n",
             cor(data$y1, data$y2, method = "spearman")))
 
 # ---- 7. Persist data + ground-truth parameters ------------------------------
-dir.create("data", showWarnings = FALSE)
-out_csv <- file.path("data", "simulated_rpbnb_copula_complex.csv")
+output_dir <- Sys.getenv(
+  "RPBNB_OUTPUT_DIR", unset = file.path("inst", "extdata")
+)
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+out_csv <- file.path(output_dir, "simulated_rpbnb_copula_complex.csv")
 write.csv(data, out_csv, row.names = FALSE)
 
 truth <- list(
   beta1 = beta1, beta2 = beta2,
   random_1 = random_1, random_2 = random_2,
   dispersion = dispersion,
-  copula = "normal", theta = 0.5,
+  copula = "normal", rho = 0.5,
   random_names_1 = names(random_1),
   random_names_2 = names(random_2)
 )
-out_rds <- file.path("data", "simulated_rpbnb_copula_complex_truth.rds")
+out_rds <- file.path(output_dir, "simulated_rpbnb_copula_complex_truth.rds")
 saveRDS(truth, out_rds)
 
 cat("\nSaved data  ->", out_csv, "\n")

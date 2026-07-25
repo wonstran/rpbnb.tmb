@@ -1,15 +1,8 @@
-#' Load and compile the TMB template if needed
-#' @keywords internal
-#' @noRd
-.load_tmb_dll <- function() {
-  pkg_path <- find.package("rpbnb.tmb")
-  TMB::dynlib(file.path(pkg_path, "src", "rpbnb.tmb"))
-}
-
 #' Configure the TMB model DLL's OpenMP thread count
 #' @keywords internal
 #' @noRd
 .configure_tmb_threads <- function(n_cores, max_threads = 4L,
+                                   parallel_tape = FALSE,
                                    DLL = "rpbnb.tmb") {
   supported <- suppressWarnings(TMB::openmp(max = TRUE, DLL = DLL))
   supported <- as.integer(supported[[1L]])
@@ -21,6 +14,10 @@
   policy_capped <- min(requested, as.integer(max_threads))
   realized <- min(policy_capped, supported)
   TMB::openmp(n = realized, DLL = DLL)
+  TMB::config(
+    tape.parallel = as.integer(isTRUE(parallel_tape)),
+    DLL = DLL
+  )
 
   if (policy_capped < requested) {
     warning(
@@ -47,9 +44,11 @@
 .make_rpbnb_tmb_object <- function(data, parameters, map = NULL,
                                    random = NULL, silent = TRUE,
                                    n_cores = 1L, max_threads = 4L,
+                                   parallel_tape = FALSE,
                                    DLL = "rpbnb.tmb") {
   realized <- .configure_tmb_threads(
-    n_cores, max_threads = max_threads, DLL = DLL
+    n_cores, max_threads = max_threads,
+    parallel_tape = parallel_tape, DLL = DLL
   )
   obj <- TMB::MakeADFun(
     data = data,
@@ -65,10 +64,13 @@
 #' Reject automatic-differentiation workloads above an explicit budget
 #' @keywords internal
 #' @noRd
-.check_tmb_workload <- function(n, draws, family_code, max_workload) {
+.check_tmb_workload <- function(n, draws, family_code, max_workload,
+                                n_threads = 1L, parallel_tape = FALSE) {
   if (is.infinite(max_workload)) return(invisible(0))
-  family_weight <- if (family_code %in% c(-1L, 0L)) 1 else 4
-  workload <- as.double(n) * as.double(draws) * family_weight
+  family_weight <- if (family_code %in% c(2L, 3L)) 1.25 else 1
+  tape_multiplier <- if (isTRUE(parallel_tape)) as.double(n_threads) else 1
+  workload <- as.double(n) * as.double(draws) *
+    family_weight * tape_multiplier
   if (!is.finite(workload) || workload > max_workload) {
     stop(
       sprintf(

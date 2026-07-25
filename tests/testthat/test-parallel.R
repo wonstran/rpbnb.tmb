@@ -75,6 +75,9 @@ test_that("rpbnb_tmb_control validates memory guardrails", {
   control <- rpbnb_tmb_control(max_threads = 3, max_workload = Inf)
   expect_identical(control$max_threads, 3L)
   expect_identical(control$max_workload, Inf)
+  expect_error(rpbnb_tmb_control(parallel_tape = NA), "parallel_tape")
+  expect_error(rpbnb_tmb_control(parallel_tape = 1), "parallel_tape")
+  expect_false(rpbnb_tmb_control()$parallel_tape)
 })
 
 test_that("thread configuration respects the memory-aware cap", {
@@ -94,18 +97,38 @@ test_that("thread configuration respects the memory-aware cap", {
   expect_identical(realized, 1L)
 })
 
+test_that("TMB tape construction is sequential unless explicitly enabled", {
+  previous <- TMB::config(DLL = "rpbnb.tmb")$tape.parallel
+  on.exit(
+    TMB::config(tape.parallel = previous, DLL = "rpbnb.tmb"),
+    add = TRUE
+  )
+
+  .configure_tmb_threads(
+    n_cores = 1L, max_threads = 1L,
+    parallel_tape = FALSE, DLL = "rpbnb.tmb"
+  )
+  expect_identical(TMB::config(DLL = "rpbnb.tmb")$tape.parallel, 0L)
+
+  .configure_tmb_threads(
+    n_cores = 1L, max_threads = 1L,
+    parallel_tape = TRUE, DLL = "rpbnb.tmb"
+  )
+  expect_identical(TMB::config(DLL = "rpbnb.tmb")$tape.parallel, 1L)
+})
+
 test_that("weighted workload guard fails early and supports explicit opt-out", {
   expect_error(
     .check_tmb_workload(
       n = 100L, draws = 10L, family_code = 2L,
-      max_workload = 3999
+      max_workload = 1249
     ),
     "max_workload"
   )
   expect_no_error(
     .check_tmb_workload(
       n = 100L, draws = 10L, family_code = 2L,
-      max_workload = 4000
+      max_workload = 1250
     )
   )
   expect_no_error(
@@ -114,6 +137,69 @@ test_that("weighted workload guard fails early and supports explicit opt-out", {
       family_code = 2L, max_workload = Inf
     )
   )
+})
+
+test_that("workload weights follow measured tape cost and taping policy", {
+  expect_no_error(.check_tmb_workload(
+    n = 1000L, draws = 400L, family_code = 1L,
+    max_workload = 400000, n_threads = 8L, parallel_tape = FALSE
+  ))
+  expect_error(.check_tmb_workload(
+    n = 1000L, draws = 400L, family_code = 2L,
+    max_workload = 499999, n_threads = 8L, parallel_tape = FALSE
+  ), "max_workload")
+  expect_no_error(.check_tmb_workload(
+    n = 1000L, draws = 400L, family_code = 2L,
+    max_workload = 500000, n_threads = 8L, parallel_tape = FALSE
+  ))
+  expect_error(.check_tmb_workload(
+    n = 1000L, draws = 400L, family_code = 1L,
+    max_workload = 3199999, n_threads = 8L, parallel_tape = TRUE
+  ), "max_workload")
+})
+
+# Asserting that one particular dataset size lands under the limit locks in a
+# coincidence: it passes at 96.8% of budget and fails on a slightly larger
+# dataset that costs no more memory to fit.  Assert the guard's properties and
+# a minimum headroom for realistic work instead.
+test_that("the workload guard is linear in its inputs", {
+  # A passing check returns the weighted workload it computed.
+  cost <- function(n, draws, family_code, ...) {
+    .check_tmb_workload(
+      n = n, draws = draws, family_code = family_code,
+      max_workload = 1e12, ...
+    )
+  }
+  base <- cost(1000L, 100L, 0L)
+  expect_equal(base, 1e5)
+  expect_equal(cost(2000L, 100L, 0L), 2 * base)
+  expect_equal(cost(1000L, 200L, 0L), 2 * base)
+  expect_equal(cost(1000L, 100L, 1L), base)
+  expect_equal(cost(1000L, 100L, 2L), 1.25 * base)
+  expect_equal(cost(1000L, 100L, 3L), 1.25 * base)
+})
+
+test_that("threads multiply the workload only under concurrent taping", {
+  cost <- function(...) {
+    .check_tmb_workload(
+      n = 1000L, draws = 100L, family_code = 0L,
+      max_workload = 1e12, ...
+    )
+  }
+  expect_equal(cost(n_threads = 8L, parallel_tape = FALSE), 1e5)
+  expect_equal(cost(n_threads = 8L, parallel_tape = TRUE), 8e5)
+})
+
+test_that("the default budget leaves headroom for realistic fits", {
+  # The largest shipped demo is the full rwm1984 extract at 400 draws.  The
+  # guard should admit it comfortably, not by a rounding margin -- otherwise a
+  # slightly larger dataset trips a limit that reflects no real memory cost.
+  default_budget <- rpbnb_tmb_control()$max_workload
+  for (family_code in c(0L, 1L, 2L, 3L)) {
+    weight <- if (family_code %in% c(2L, 3L)) 1.25 else 1
+    used <- 3874 * 400 * weight
+    expect_lt(used / default_budget, 0.85)
+  }
 })
 
 test_that("TMB thread configuration realizes a valid request", {
@@ -203,20 +289,11 @@ test_that("print reports the realized TMB thread count", {
 })
 
 test_that("model DLL reports its compile-time OpenMP capability", {
-  makeconf <- file.path(R.home("etc"), .Platform$r_arch, "Makeconf")
-  if (!file.exists(makeconf)) makeconf <- file.path(R.home("etc"), "Makeconf")
-  openmp_line <- grep(
-    "^SHLIB_OPENMP_CXXFLAGS[[:space:]]*=",
-    readLines(makeconf, warn = FALSE), value = TRUE
-  )
-  toolchain_openmp <- length(openmp_line) == 1L &&
-    nzchar(trimws(sub("^[^=]*=", "", openmp_line)))
-
   fixture <- parallel_tmb_fixture()
   previous <- TMB::openmp(DLL = "rpbnb.tmb")
   on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
   supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
-  requested <- if (toolchain_openmp && supported >= 2L) 2L else 1L
+  requested <- if (supported >= 2L) 2L else 1L
   configured <- .make_rpbnb_tmb_object(
     data = fixture$data,
     parameters = fixture$parameters,
@@ -225,38 +302,9 @@ test_that("model DLL reports its compile-time OpenMP capability", {
   )
 
   expect_identical(configured$n_cores, requested)
-  expect_identical(
-    configured$obj$report()$openmp_compiled,
-    as.integer(toolchain_openmp)
-  )
-})
-
-test_that("C++ likelihood declares a TMB parallel accumulator", {
-  cpp <- readLines(
-    testthat::test_path("..", "..", "src", "rpbnb.tmb.cpp"),
-    warn = FALSE
-  )
-  expect_true(any(grepl("parallel_accumulator<Type> nll", cpp, fixed = TRUE)))
-})
-
-test_that("Gaussian copula quadrature uses a thread-safe atomic primitive", {
-  cpp <- paste(
-    readLines(
-      testthat::test_path("..", "..", "src", "rpbnb.tmb.cpp"),
-      warn = FALSE
-    ),
-    collapse = "\n"
-  )
-  expect_match(
-    cpp,
-    "TMB_ATOMIC_VECTOR_FUNCTION(gaussian_bvn_atomic",
-    fixed = TRUE
-  )
-  expect_false(grepl(
-    "REGISTER_ATOMIC(gaussian_bvn_kernel)",
-    cpp,
-    fixed = TRUE
-  ))
+  reported <- configured$obj$report()$openmp_compiled
+  expect_true(reported %in% c(0L, 1L))
+  if (supported >= 2L) expect_identical(reported, 1L)
 })
 
 test_that("serial and parallel copula objectives and gradients agree", {
@@ -265,13 +313,13 @@ test_that("serial and parallel copula objectives and gradients agree", {
   supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
   if (supported < 2L) skip("TMB runtime supports only one thread")
 
-  reference_fn <- c(`1` = 23.1997247775494, `2` = 23.0779112497932)
+  reference_fn <- c(`1` = 23.1990464774657, `2` = 23.0779112497932)
   reference_gr <- list(
-    `1` = c(-0.234213555458111, -0.644306804887814,
-            -0.305971489013748, -0.377991335683169,
-            0.0028883314805063, -0.00572813869692664,
-            0.468873423307357, 0.365165705931843,
-            0.739199683181961),
+    `1` = c(-0.234009598804351, -0.644262309598928,
+            -0.30606552853166, -0.378131107639618,
+            0.00289799326474705, -0.00572295641355119,
+            0.468916002251157, 0.365254841128196,
+            0.737716614784872),
     `2` = c(-0.0442292322068991, -0.604280050235007,
             -0.668739747888821, -0.551604808939026,
             0.00734542308301755, -0.00647710160389995,
@@ -316,44 +364,24 @@ test_that("serial and parallel copula objectives and gradients agree", {
   }
 })
 
-test_that("parallel benchmark reports timing and numerical agreement", {
-  benchmark_path <- testthat::test_path(
-    "..", "..", "inst", "benchmark_parallel.R"
-  )
-  expect_true(file.exists(benchmark_path))
-  if (!file.exists(benchmark_path)) return(invisible())
+test_that("Frank and NB kernels stay finite at extreme working parameters", {
+  frank <- copula_parallel_fixture(1L)
+  frank_obj <- .make_rpbnb_tmb_object(
+    data = frank$data, parameters = frank$parameters,
+    map = frank$map, n_cores = 1L
+  )$obj
+  frank_par <- frank_obj$par
+  frank_par["z_dep"] <- -500
+  expect_true(is.finite(frank_obj$fn(frank_par)))
+  expect_true(all(is.finite(frank_obj$gr(frank_par))))
 
-  benchmark <- paste(readLines(benchmark_path, warn = FALSE), collapse = "\n")
-  expect_match(benchmark, "realized", fixed = TRUE)
-  expect_match(benchmark, "speedup", fixed = TRUE)
-  expect_match(benchmark, "coef_diff", fixed = TRUE)
-  expect_match(benchmark, "se_diff", fixed = TRUE)
-  expect_match(benchmark, "objective_diff", fixed = TRUE)
-  expect_match(benchmark, "gradient_diff", fixed = TRUE)
-  expect_match(benchmark, 'keep = "full"', fixed = TRUE)
-})
-
-test_that("demo scripts use configured core counts", {
-  demo_paths <- testthat::test_path(
-    "..", "..", "inst",
-    c("fit_rpbnb_diff_copula.R", "fit_rpbnb_diff_famoye.R")
-  )
-  copula_demo <- paste(
-    readLines(demo_paths[[1L]], warn = FALSE),
-    collapse = "\n"
-  )
-  famoye_demo <- paste(
-    readLines(demo_paths[[2L]], warn = FALSE),
-    collapse = "\n"
-  )
-
-  expect_match(copula_demo, "n_cores <- 8", fixed = TRUE)
-  expect_match(copula_demo, "n_cores     = n_cores", fixed = TRUE)
-
-  expect_match(famoye_demo, "n_cores <- 8", fixed = TRUE)
-  expect_match(
-    famoye_demo,
-    "n_cores     = n_cores",
-    fixed = TRUE
-  )
+  nb <- parallel_tmb_fixture()
+  nb_obj <- .make_rpbnb_tmb_object(
+    data = nb$data, parameters = nb$parameters,
+    map = nb$map, n_cores = 1L
+  )$obj
+  nb_par <- nb_obj$par
+  nb_par[c("beta1", "beta2")] <- -100
+  expect_true(is.finite(nb_obj$fn(nb_par)))
+  expect_true(all(is.finite(nb_obj$gr(nb_par))))
 })

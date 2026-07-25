@@ -10,7 +10,8 @@ rpbnb_tmb_control(
   print_level = 0L,
   n_cores = 1L,
   max_threads = 4L,
-  max_workload = 2e+06,
+  max_workload = 2500000,
+  parallel_tape = FALSE,
   halton_burn = 300L
 )
 }
@@ -27,7 +28,24 @@ rpbnb_tmb_control(
 explicitly to opt into a larger memory footprint.}
 
 \item{max_workload}{Maximum weighted observation-draw evaluations permitted
-before TMB tape construction. Use \code{Inf} to disable the guard.}
+before TMB tape construction. Use \code{Inf} to disable the guard.
+
+One weighted unit is one observation-draw of a Famoye or independence
+tape. Measured tape cost is about 850 bytes per unit (Famoye 853, Frank
+857, Gaussian 1070, Clayton 1079 bytes per observation-draw), which is
+where the family weights of 1 and 1.25 come from. The default of
+\code{2.5e6} units therefore encodes a budget of roughly 2.1 GB of
+automatic-differentiation tape for a single fit. Raise it deliberately
+against available memory rather than to make one particular dataset fit.
+
+With the default \code{parallel_tape = FALSE} the budget is per fit. With
+\code{parallel_tape = TRUE} the tapes are built concurrently, so the guard
+multiplies the workload by the realized thread count and the budget above
+is shared across them.}
+
+\item{parallel_tape}{Construct per-thread TMB tapes concurrently. The
+default \code{FALSE} constructs them sequentially to reduce peak memory;
+objective and gradient evaluation remains parallel.}
 
 \item{halton_burn}{Number of leading Halton points to discard.}
 }

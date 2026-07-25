@@ -19,6 +19,13 @@
 #define DIST_UNIFORM    2
 #define DIST_TRIANGULAR 3
 
+// Ceiling of the bounded Frank link.  exp(-theta * u) must stay finite, so
+// theta is squashed into (-FRANK_THETA_MAX, FRANK_THETA_MAX).  This caps
+// attainable Frank dependence at Kendall's tau of about 0.891; R reports a
+// boundary warning when an estimate is pinned there.  Must match
+// FRANK_THETA_MAX in R/utilities.R.
+#define FRANK_THETA_MAX 35.0
+
 static const double gaussian_x20[10] = {
   0.9931285991850949, 0.9639719272779138, 0.9122344282513259,
   0.8391169718222188, 0.7463319064601508, 0.6360536807265150,
@@ -31,6 +38,26 @@ static const double gaussian_w20[10] = {
   0.1316886384491766, 0.1420961093183821, 0.1491729864726037,
   0.1527533871307259
 };
+
+// CppAD in the supported TMB toolchain does not overload std::expm1/log1p.
+// These series-backed equivalents retain precision and AD derivatives near 0.
+template<class Type>
+Type stable_expm1(Type x) {
+  Type x2 = x * x;
+  Type series = x + x2 / Type(2) + x2 * x / Type(6) +
+    x2 * x2 / Type(24);
+  Type regular = exp(x) - Type(1);
+  return CppAD::CondExpLt(fabs(x), Type(1e-4), series, regular);
+}
+
+template<class Type>
+Type stable_log1p(Type x) {
+  Type x2 = x * x;
+  Type series = x - x2 / Type(2) + x2 * x / Type(3) -
+    x2 * x2 / Type(4);
+  Type regular = log(Type(1) + x);
+  return CppAD::CondExpLt(fabs(x), Type(1e-4), series, regular);
+}
 
 // Tape-compressed 20-point bivariate-normal CDF quadrature.
 template<class Type>
@@ -215,10 +242,27 @@ Type objective_function<Type>::operator() () {
     x = CppAD::CondExpLt(x, lo, lo, x);
     return CppAD::CondExpGt(x, hi, hi, x);
   };
-  Type m1 = exp(clamp_ad(log_m1, Type(-20.0), Type(20.0)));
-  Type m2 = exp(clamp_ad(log_m2, Type(-20.0), Type(20.0)));
+  Type log_m1_c = clamp_ad(log_m1, Type(-20.0), Type(20.0));
+  Type log_m2_c = clamp_ad(log_m2, Type(-20.0), Type(20.0));
+  Type m1 = exp(log_m1_c);
+  Type m2 = exp(log_m2_c);
   Type r1 = 1.0 / m1;
   Type r2 = 1.0 / m2;
+
+  // dnbinom2(y, mu, mu + m*mu*mu) evaluates log(var - mu).  The variance
+  // increment m*mu*mu is lost to rounding once it falls below ulp(mu), i.e.
+  // once log(m) + log(mu) drops under about -36.04 = log(2^-52).  Clamping
+  // the linear predictor alone cannot enforce that, because m is estimated:
+  // the floor has to move with m.  Keep -35 as the ceiling on the floor so
+  // that over-dispersed fits are unaffected.
+  auto nb2_eta_floor = [&](Type log_m_clamped) -> Type {
+    Type negative_log_m = CppAD::CondExpLt(
+      log_m_clamped, Type(0), log_m_clamped, Type(0)
+    );
+    return Type(-35.0) - negative_log_m;
+  };
+  Type eta_floor1 = pois1 ? Type(-35.0) : nb2_eta_floor(log_m1_c);
+  Type eta_floor2 = pois2 ? Type(-35.0) : nb2_eta_floor(log_m2_c);
   vector<Type> sd1(log_sd1.size()), sd2(log_sd2.size());
   for (int j = 0; j < log_sd1.size(); j++)
     sd1(j) = exp(clamp_ad(log_sd1(j), Type(-20.0), Type(20.0)));
@@ -231,16 +275,14 @@ Type objective_function<Type>::operator() () {
 
   // Dependence transform (Famoye: logistic map; Copula: identity/tanh/exp)
   Type eps = 1e-6;
-  Type lam, theta, rho;
+  Type lam = Type(0), theta = Type(0), rho = Type(0);
   if (family == FAM_FAMOYE) {
     Type sig = invlogit(z_dep);  // logistic(0,1) = 1/(1+exp(-x))
     lam = lamLo + (lamHi - lamLo) * (eps + (1.0 - 2.0 * eps) * sig);
   } else if (family == FAM_FRANK) {
-    // Keep the Frank formula finite at the independence point.  The default
-    // start is deliberately non-zero so the AD tape retains dependence
-    // derivatives; this guard only protects later evaluations near zero.
-    Type signed_eps = CppAD::CondExpGe(z_dep, Type(0.0), Type(1e-8), Type(-1e-8));
-    theta = CppAD::CondExpLt(fabs(z_dep), Type(1e-8), signed_eps, z_dep);
+    // A smooth bounded link prevents exponential overflow while retaining
+    // theta = 0 and unit derivative at independence.
+    theta = Type(FRANK_THETA_MAX) * tanh(z_dep / Type(FRANK_THETA_MAX));
   } else if (family == FAM_GAUSSIAN) {
     rho = tanh(z_dep);
   } else if (family == FAM_CLAYTON) {
@@ -325,9 +367,9 @@ Type objective_function<Type>::operator() () {
         eta2 += X2(i, rand_idx2(j)) * dev2(r, j);
       }
 
-      Type mu1 = exp(clamp_ad(eta1, Type(-690.0),
+      Type mu1 = exp(clamp_ad(eta1, eta_floor1,
                               Type(34.538776394910684)));
-      Type mu2 = exp(clamp_ad(eta2, Type(-690.0),
+      Type mu2 = exp(clamp_ad(eta2, eta_floor2,
                               Type(34.538776394910684)));
 
       if (family == FAM_FAMOYE) {
@@ -340,13 +382,31 @@ Type objective_function<Type>::operator() () {
 
         Type c1 = pois1
           ? exp(-famoye_d * mu1)
-          : pow(Type(1.0) + famoye_d * m1 * mu1, Type(-1.0) / m1);
+          : exp(-stable_log1p(famoye_d * m1 * mu1) / m1);
         Type c2 = pois2
           ? exp(-famoye_d * mu2)
-          : pow(Type(1.0) + famoye_d * m2 * mu2, Type(-1.0) / m2);
+          : exp(-stable_log1p(famoye_d * m2 * mu2) / m2);
         Type dep = Type(1.0) + lam * (ey1(i) - c1) * (ey2(i) - c2);
-        dep = CppAD::CondExpLt(dep, Type(1e-300), Type(1e-300), dep);
-        log_draw(r) = lnb1 + lnb2 + log(dep);
+        // The Sarmanov factor can go non-positive because lamLo/lamHi are
+        // frozen at the starting values rather than recomputed at the current
+        // mu.  Penalising makes that visible in the objective instead of
+        // hiding it behind a probability clamp.
+        //
+        // This is a value-only barrier, NOT a constraint: CondExpLe is a step,
+        // so the penalty term contributes exactly zero gradient on both sides.
+        // A gradient-driven optimizer is repelled only by the function value,
+        // and cannot be steered out of the invalid region by the score.  The
+        // real fix is parameter-dependent bounds evaluated here on the tape;
+        // until then, treat a fit that lands on the penalty as invalid rather
+        // than as a converged optimum.
+        Type invalid_dep = CppAD::CondExpLe(
+          dep, Type(0), Type(1), Type(0)
+        );
+        Type safe_dep = CppAD::CondExpLe(
+          dep, Type(0), Type(1e-300), dep
+        );
+        log_draw(r) = lnb1 + lnb2 + log(safe_dep) -
+          invalid_dep * Type(1e10);
       } else if (family == FAM_INDEP) {
         Type lnb1 = pois1 ? dpois(Y1(i), mu1, true)
                           : dnbinom2(Y1(i), mu1,
@@ -379,12 +439,23 @@ Type objective_function<Type>::operator() () {
         Type C_ab, C_amb, C_abm, C_ambm;
         if (family == FAM_FRANK) {
           auto frank_cdf = [](Type u, Type v, Type th) -> Type {
-            Type ratio = (exp(-th * u) - Type(1.0)) *
-                         (exp(-th * v) - Type(1.0)) /
-                         (exp(-th) - Type(1.0));
+            Type signed_eps = CppAD::CondExpGe(
+              th, Type(0), Type(1e-5), Type(-1e-5)
+            );
+            Type safe_th = CppAD::CondExpLt(
+              fabs(th), Type(1e-5), signed_eps, th
+            );
+            Type ratio = stable_expm1(-safe_th * u) *
+                         stable_expm1(-safe_th * v) /
+                         stable_expm1(-safe_th);
             ratio = CppAD::CondExpLt(ratio, Type(-1.0 + 1e-15),
                                      Type(-1.0 + 1e-15), ratio);
-            return -log(Type(1.0) + ratio) / th;
+            Type regular = -stable_log1p(ratio) / safe_th;
+            Type near_independence = u * v +
+              th * u * v * (Type(1) - u) * (Type(1) - v) / Type(2);
+            return CppAD::CondExpLt(
+              fabs(th), Type(1e-5), near_independence, regular
+            );
           };
           C_ab   = frank_cdf(a1,   b1,  theta);
           C_amb  = frank_cdf(a1m,  b1,  theta);
@@ -407,6 +478,8 @@ Type objective_function<Type>::operator() () {
           C_ambm = gaussian_bvn_cdf(qam,  qbm, rho);
         } else {
           auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
+            // These exact-zero branches depend only on observed counts, so
+            // they remain valid on a non-retaped objective.
             if (u == Type(0.0) || v == Type(0.0)) return Type(0.0);
             u = CppAD::CondExpLt(u, Type(1e-15), Type(1e-15), u);
             v = CppAD::CondExpLt(v, Type(1e-15), Type(1e-15), v);
@@ -458,15 +531,14 @@ Type objective_function<Type>::operator() () {
   if (family == FAM_FRANK || family == FAM_GAUSSIAN || family == FAM_CLAYTON) {
     Type tau;
     if (family == FAM_GAUSSIAN) {
-      tau = Type(2.0) / M_PI * asin(rho);
+      tau = Type(2.0) / Type(3.14159265358979323846) * asin(rho);
     } else if (family == FAM_CLAYTON) {
       tau = theta / (theta + Type(2.0));
     } else {  // Frank
       // Frank tau: 1 - 4/th * (1 - D1(th)) where D1 is Debye function order 1
-      if (fabs(theta) < Type(1e-10)) {
-        tau = Type(0);
-      } else {
-        // 20-point Gauss-Legendre quadrature on [0, theta]
+      {
+        // 20-point Gauss-Legendre quadrature on [0, theta], with a
+        // small-theta series that keeps the value and derivatives smooth.
         static const double x20[10] = {0.9931285991850949, 0.9639719272779138,
           0.9122344282513259, 0.8391169718222188, 0.7463319064601508,
           0.6360536807265150, 0.5108670019508271, 0.3737060887154196,
@@ -475,19 +547,31 @@ Type objective_function<Type>::operator() () {
           0.06267204833410906, 0.08327674157670475, 0.1019301198172404,
           0.1181945319615184, 0.1316886384491766, 0.1420961093183821,
           0.1491729864726037, 0.1527533871307259};
+        Type signed_eps = CppAD::CondExpGe(
+          theta, Type(0), Type(1e-4), Type(-1e-4)
+        );
+        Type quadrature_theta = CppAD::CondExpLt(
+          fabs(theta), Type(1e-4), signed_eps, theta
+        );
         Type D1 = 0;
         for (int qq = 0; qq < 10; qq++) {
-          Type t = theta * Type(0.5) * (Type(1.0) + Type(x20[qq]));
-          Type f = t / (exp(t) - Type(1.0));
-          if (!CppAD::isfinite(f)) f = Type(0);
+          Type t = quadrature_theta * Type(0.5) *
+            (Type(1.0) + Type(x20[qq]));
+          Type f = t / stable_expm1(t);
           D1 += Type(w20[qq]) * f;
-          t = theta * Type(0.5) * (Type(1.0) - Type(x20[qq]));
-          f = t / (exp(t) - Type(1.0));
-          if (!CppAD::isfinite(f)) f = Type(0);
+          t = quadrature_theta * Type(0.5) *
+            (Type(1.0) - Type(x20[qq]));
+          f = t / stable_expm1(t);
           D1 += Type(w20[qq]) * f;
         }
         D1 = D1 * Type(0.5);
-        tau = Type(1.0) - Type(4.0) / theta * (Type(1.0) - D1);
+        Type quadrature_tau = Type(1.0) -
+          Type(4.0) / quadrature_theta * (Type(1.0) - D1);
+        Type series_tau = theta / Type(9.0) -
+          theta * theta * theta / Type(900.0);
+        tau = CppAD::CondExpLt(
+          fabs(theta), Type(1e-4), series_tau, quadrature_tau
+        );
       }
     }
     ADREPORT(tau);

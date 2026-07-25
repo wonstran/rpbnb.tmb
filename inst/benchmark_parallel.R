@@ -12,7 +12,9 @@ parallel_cores <- if (is.na(detected_cores)) {
   max(1L, min(4L, detected_cores))
 }
 
-data <- utils::read.csv(file.path("data", "rwm1984_bnb.csv"))[1:500, ]
+data <- utils::read.csv(system.file(
+  "extdata", "rwm1984_bnb.csv", package = "rpbnb.tmb", mustWork = TRUE
+))[1:500, ]
 formula_1 <- docvis ~ age + hhninc + educ + female + married + kids
 formula_2 <- hospvis ~ age + educ + outwork + female + self
 

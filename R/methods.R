@@ -16,16 +16,6 @@ logLik.rpbnb_tmb_fit <- function(object, ...) {
 }
 
 #' @export
-AIC.rpbnb_tmb_fit <- function(object, ...) {
-  -2 * object$logLik + 2 * object$npar
-}
-
-#' @export
-BIC.rpbnb_tmb_fit <- function(object, ...) {
-  -2 * object$logLik + log(object$nobs) * object$npar
-}
-
-#' @export
 print.rpbnb_tmb_fit <- function(x, ...) {
   cat("rpbnb_tmb fit\n")
   cat("  Log-likelihood:", format(x$logLik, digits = 6), "\n")
@@ -59,10 +49,13 @@ print.rpbnb_tmb_fit <- function(x, ...) {
   print(x, print.gap = 3)
 }
 
+#' Summarize a fitted rpbnb.tmb model
+#'
 #' @param object A fitted model object of class rpbnb_tmb_fit.
 #' @param digits Number of decimal places for numeric columns in coefficient
 #'   tables. Default 4. Use a negative value (e.g. -1) for full precision.
 #' @param ... Not used.
+#' @return The fitted object, invisibly.
 #' @export
 summary.rpbnb_tmb_fit <- function(object, digits = 4L, ...) {
   cat("Summary: rpbnb_tmb fit\n")
@@ -170,14 +163,103 @@ summary.rpbnb_tmb_fit <- function(object, digits = 4L, ...) {
   invisible(object)
 }
 
+#' Predict from a fitted bivariate count model
+#'
+#' Predictions integrate over the retained simulation draws when random
+#' coefficients are present. Link predictions are the log of the integrated
+#' response mean, so \code{exp(predict(fit, type = "link"))} equals response
+#' predictions.
+#'
+#' @param object A fitted \code{rpbnb_tmb_fit} object.
+#' @param newdata Optional data frame. If omitted, the retained fitting design
+#'   is used; compact fits require \code{newdata}.
+#' @param type Either \code{"response"} or \code{"link"}.
+#' @param which Return both margins or only \code{"y1"} or \code{"y2"}.
+#' @param ... Reserved for future use.
+#' @return A two-column numeric matrix for \code{which = "both"}, otherwise a
+#'   numeric vector.
 #' @export
-predict.rpbnb_tmb_fit <- function(object, ...) {
-  coefs <- object$coef
-  k1 <- sum(grepl("^b1:", names(coefs)))
-  k2 <- sum(grepl("^b2:", names(coefs)))
-  beta1 <- coefs[seq_len(k1)]
-  beta2 <- coefs[seq_len(k2) + k1]
-  # Fitted linear predictors — requires model frame; without newdata,
-  # return the coefficients as fitted parameter vector.
-  structure(coefs, class = "rpbnb_tmb_pred")
+predict.rpbnb_tmb_fit <- function(
+  object, newdata = NULL,
+  type = c("response", "link"),
+  which = c("both", "y1", "y2"), ...
+) {
+  type <- match.arg(type)
+  which <- match.arg(which)
+  equations <- if (which == "both") 1:2 else if (which == "y1") 1L else 2L
+
+  predictions <- lapply(equations, function(eq) {
+    X <- .prediction_design(object, eq, newdata)
+    response <- .prediction_margin(object, eq, X)
+    if (type == "link") log(response) else response
+  })
+
+  if (which != "both") return(predictions[[1L]])
+  out <- do.call(cbind, predictions)
+  colnames(out) <- c("y1", "y2")
+  out
+}
+
+.prediction_design <- function(object, eq, newdata) {
+  if (is.null(newdata)) {
+    X <- object[[paste0("X", eq)]]
+    if (is.null(X)) {
+      stop(
+        'This compact fit does not retain fitting rows; supply `newdata`.',
+        call. = FALSE
+      )
+    }
+    return(X)
+  }
+  if (!is.data.frame(newdata)) {
+    stop("`newdata` must be a data frame.", call. = FALSE)
+  }
+  meta <- object$model_meta[[paste0("eq", eq)]]
+  frame <- stats::model.frame(
+    meta$terms, data = newdata, na.action = stats::na.pass,
+    xlev = meta$xlevels
+  )
+  X <- stats::model.matrix(
+    meta$terms, data = frame, contrasts.arg = meta$contrasts
+  )
+  expected <- sub(paste0("^b", eq, ":"), "", grep(
+    paste0("^b", eq, ":"), names(object$coef), value = TRUE
+  ))
+  if (!identical(colnames(X), expected)) {
+    stop("`newdata` produced an incompatible design matrix.", call. = FALSE)
+  }
+  X
+}
+
+.prediction_margin <- function(object, eq, X) {
+  cn <- colnames(X)
+  beta_names <- paste0("b", eq, ":", cn)
+  beta <- object$coef[beta_names]
+  rand_idx <- object[[paste0("rand_idx", eq)]]
+
+  if (!length(rand_idx)) {
+    return(exp(pmin(pmax(as.vector(X %*% beta), -700), 700)))
+  }
+  if (is.null(object$rp_meta)) {
+    stop(
+      "Random-coefficient prediction requires retained simulation draws.",
+      call. = FALSE
+    )
+  }
+
+  Z <- object$rp_meta[[paste0("Z", eq)]]
+  dist <- object$rp_meta[[paste0("dist", eq)]]
+  sign <- object$rp_meta[[paste0("sign", eq)]]
+  scale_labels <- vapply(
+    dist, function(name) rand_dist_registry[[name]]$scale_label,
+    character(1)
+  )
+  scale_names <- paste0(scale_labels, eq, ":", cn[rand_idx])
+  scales <- exp(object$coef[scale_names])
+  realized <- rand_realize(
+    Z, dist, sign, beta[rand_idx], scales
+  )
+  xb <- as.vector(X %*% beta)
+  xr <- X[, rand_idx, drop = FALSE]
+  .draw_mean_exp(xb, xr, realized$dev)
 }

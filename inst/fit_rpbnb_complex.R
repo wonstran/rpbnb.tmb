@@ -12,8 +12,14 @@
 library(rpbnb.tmb)
 
 # ---- 1. Load data + ground truth -------------------------------------------
-data  <- read.csv(file.path("data", "simulated_rpbnb_dependent.csv"))
-truth <- readRDS(file.path("data", "simulated_rpbnb_dependent_truth.rds"))
+data <- read.csv(system.file(
+  "extdata", "simulated_rpbnb_dependent.csv",
+  package = "rpbnb.tmb", mustWork = TRUE
+))
+truth <- readRDS(system.file(
+  "extdata", "simulated_rpbnb_dependent_truth.rds",
+  package = "rpbnb.tmb", mustWork = TRUE
+))
 
 cat("=== Fitting RP-BNB (TMB) to complex sample data ===\n")
 cat("Observations :", nrow(data), "\n")

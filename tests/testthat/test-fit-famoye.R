@@ -12,7 +12,7 @@ test_that("Famoye independence (lambda=0) equals two marginal NB2 fits", {
   fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = dat,
                         dependence = "independence", draws = 100)
   expect_true(is.finite(fit$logLik))
-  expect_true(fit$npar >= 6)  # b1, b2, log_m1, log_m2, 4 coefs + 2 dispersions
+  expect_identical(fit$npar, 6L)
 })
 
 test_that("Famoye fit recovers known parameters", {

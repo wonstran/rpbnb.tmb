@@ -17,12 +17,18 @@
 library(rpbnb.tmb)
 
 # ---- 1. Load data + ground truth -------------------------------------------
-data  <- read.csv(file.path("data", "simulated_rpbnb_copula_complex.csv"))
-truth <- readRDS(file.path("data", "simulated_rpbnb_copula_complex_truth.rds"))
+data <- read.csv(system.file(
+  "extdata", "simulated_rpbnb_copula_complex.csv",
+  package = "rpbnb.tmb", mustWork = TRUE
+))
+truth <- readRDS(system.file(
+  "extdata", "simulated_rpbnb_copula_complex_truth.rds",
+  package = "rpbnb.tmb", mustWork = TRUE
+))
 
 cat("=== Fitting copula RP-BNB (TMB) to complex sample data ===\n")
 cat("Observations :", nrow(data), "\n")
-cat(sprintf("True copula  : %s  (rho = %.2f)\n\n", truth$copula, truth$theta))
+cat(sprintf("True copula  : %s  (rho = %.2f)\n\n", truth$copula, truth$rho))
 
 # ---- 2. Model specification -------------------------------------------------
 rhs <- ~ x_age + x_income + x_score + d_female + d_urban + d_married + d_college + d_smoker
@@ -37,7 +43,7 @@ t_fit <- system.time(
     random_1  = truth$random_names_1,   # c("x_age")
     random_2  = truth$random_names_2,   # c("x_income")
     dependence = copula("normal"),
-    draws     = 400,
+    draws     = 300,
     seed      = 20240712,
     control   = rpbnb_tmb_control(
       print_level = 2,

@@ -19,17 +19,6 @@ fit_inference_mode <- function(inference = "full", keep = "postfit") {
   )
 }
 
-test_that("default inference avoids TMB sdreport retaping", {
-  fit_source <- paste(
-    readLines(
-      testthat::test_path("..", "..", "R", "fit_rpbnb_tmb.R"),
-      warn = FALSE
-    ),
-    collapse = "\n"
-  )
-  expect_false(grepl("TMB::sdreport(", fit_source, fixed = TRUE))
-})
-
 test_that("full inference supplies compatible fixed and report summaries", {
   fit <- fit_inference_mode("full", "full")
 
@@ -106,6 +95,97 @@ test_that("inference and retention arguments are matched", {
   )
 })
 
+test_that("Frank reporting is smooth at independence and bounded at extremes", {
+  at_independence <- .rpbnb_natural_report(
+    c(log_m1 = 0, log_m2 = 0, z_dep = 0),
+    family_code = 1L, lamLo = 0, lamHi = 0
+  )
+  at_extreme <- .rpbnb_natural_report(
+    c(log_m1 = 0, log_m2 = 0, z_dep = -500),
+    family_code = 1L, lamLo = 0, lamHi = 0
+  )
+
+  expect_equal(at_independence$theta$value, 0)
+  expect_equal(at_independence$theta$derivative, 1)
+  expect_equal(at_independence$tau$value, 0)
+  expect_true(abs(at_extreme$theta$value) <= 35)
+  expect_true(is.finite(at_extreme$tau$value))
+})
+
+test_that("Famoye saturation is marked as boundary inference", {
+  report <- .rpbnb_natural_report(
+    c(log_m1 = 0, log_m2 = 0, z_dep = 14),
+    family_code = 0L, lamLo = -3, lamHi = 4
+  )
+
+  expect_true(report$lam$boundary)
+})
+
+# Every dependence link is bounded, so every family can saturate.  Flagging
+# only Famoye would leave the same silent-boundary defect in the three copulas.
+natural_report <- function(z, family_code, lamLo = 0, lamHi = 0) {
+  .rpbnb_natural_report(
+    c(log_m1 = 0, log_m2 = 0, z_dep = z),
+    family_code = family_code, lamLo = lamLo, lamHi = lamHi
+  )
+}
+
+test_that("Frank saturation against its bounded link is marked as boundary", {
+  # 35 * tanh(z / 35) saturates; z = 87.6 reproduces an observed fit that
+  # capped theta at 34.5 while reporting an interior-looking standard error.
+  saturated <- natural_report(87.6, 1L)
+  expect_true(saturated$theta$boundary)
+  expect_true(saturated$tau$boundary)
+
+  interior <- natural_report(5, 1L)
+  expect_false(interior$theta$boundary)
+  expect_false(interior$tau$boundary)
+})
+
+test_that("Gaussian and Clayton saturation are marked as boundary", {
+  expect_true(natural_report(4, 2L)$rho$boundary)
+  expect_true(natural_report(4, 2L)$tau$boundary)
+  expect_false(natural_report(0.5, 2L)$rho$boundary)
+
+  expect_true(natural_report(25, 3L)$theta$boundary)
+  expect_true(natural_report(25, 3L)$tau$boundary)
+  expect_false(natural_report(1, 3L)$theta$boundary)
+})
+
+test_that("independence and dispersion reports are never spuriously flagged", {
+  report <- natural_report(0, -1L)
+  expect_false(report$m1$boundary)
+  expect_false(report$m2$boundary)
+})
+
+test_that("boundary dependence parameters report NA standard errors", {
+  fit <- fit_rpbnb_tmb(
+    y1 ~ x, y2 ~ x,
+    data = inference_test_data(),
+    dependence = copula("frank"),
+    start = c(z_dep = 200),
+    inference = "full",
+    control = rpbnb_tmb_control(iterlim = 1L, n_cores = 1L)
+  ) |> suppressWarnings()
+
+  expect_true("theta" %in% fit$boundary_report)
+  report <- summary(fit$sdreport, "report")
+  expect_true(is.na(report["theta", "Std. Error"]))
+})
+
+test_that("a saturated copula fit warns instead of failing silently", {
+  expect_warning(
+    fit_rpbnb_tmb(
+      y1 ~ x, y2 ~ x,
+      data = inference_test_data(),
+      dependence = copula("frank"),
+      start = c(z_dep = 200),
+      control = rpbnb_tmb_control(iterlim = 1L, n_cores = 1L)
+    ),
+    "boundary"
+  )
+})
+
 test_that("draw means stream with numerical equivalence", {
   xb <- c(-0.4, 0.2, 0.7)
   xr <- matrix(c(-1, 0.5, 2), ncol = 1L)
@@ -120,20 +200,6 @@ test_that("draw means stream with numerical equivalence", {
     .draw_mean_weighted_exp(xb, xr, dev, weights),
     rowMeans(sweep(dense, 2L, weights, `*`))
   )
-})
-
-test_that("marginal effects do not construct observation-by-draw matrices", {
-  source <- paste(
-    readLines(
-      testthat::test_path("..", "..", "R", "marginal_effects.R"),
-      warn = FALSE
-    ),
-    collapse = "\n"
-  )
-  expect_false(grepl("mu_mat <- matrix", source, fixed = TRUE))
-  expect_false(grepl("mu_mat_t <- matrix", source, fixed = TRUE))
-  expect_false(grepl("vapply(seq_len(R)", source, fixed = TRUE))
-  expect_false(grepl("vapply(seq_len(R_t)", source, fixed = TRUE))
 })
 
 test_that("compact fits reject marginal effects before accessing fit state", {

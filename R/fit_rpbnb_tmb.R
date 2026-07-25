@@ -46,6 +46,18 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
                           inference = c("full", "diag", "none"),
                           keep = c("postfit", "compact", "full"),
                           poisson_1 = FALSE, poisson_2 = FALSE) {
+  had_random_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_random_seed) {
+    saved_random_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  }
+  on.exit({
+    if (had_random_seed) {
+      assign(".Random.seed", saved_random_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+
   stopifnot(is.data.frame(data))
   inference <- match.arg(inference)
   keep <- match.arg(keep)
@@ -95,11 +107,18 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   k1 <- ncol(X1); k2 <- ncol(X2)
   total_rand <- q1 + q2
   effective_draws <- if (total_rand > 0L) draws else 1L
+  configured_threads <- .configure_tmb_threads(
+    control$n_cores,
+    max_threads = control$max_threads,
+    parallel_tape = control$parallel_tape
+  )
   .check_tmb_workload(
     n = n,
     draws = effective_draws,
     family_code = family_code,
-    max_workload = control$max_workload
+    max_workload = control$max_workload,
+    n_threads = configured_threads,
+    parallel_tape = control$parallel_tape
   )
 
   # Generate Halton draws
@@ -115,16 +134,14 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   # Parameter names
   scale_lab <- function(dist, cols) {
     vapply(seq_along(dist), function(j) {
-      paste0(c("log_sd", "log_s", "log_w", "log_w")[dist[j] + 1L], cols[j])
+      paste0(rand_dist_registry[[dist[j]]]$scale_label, cols[j])
     }, character(1))
   }
   par_names <- c(paste0("b1:", colnames(X1)), paste0("b2:", colnames(X2)),
-                 if (q1 > 0) scale_lab(dist1, paste0("1:", colnames(X1)[rand_idx1])),
-                 if (q2 > 0) scale_lab(dist2, paste0("2:", colnames(X2)[rand_idx2])),
+                 if (q1 > 0) scale_lab(spec1$dist, paste0("1:", colnames(X1)[rand_idx1])),
+                 if (q2 > 0) scale_lab(spec2$dist, paste0("2:", colnames(X2)[rand_idx2])),
                  "log_m1", "log_m2",
                  if (family_code >= 0L) "z_dep" else NULL)
-  npar <- length(par_names)
-
   # Default start values
   default_start <- c(rep(0, k1 + k2),
                      if (q1 > 0) rep(log(0.2), q1),
@@ -145,6 +162,8 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   if (length(fixed_names)) {
     start[fixed_names] <- log(POISSON_M)
   }
+  free <- !(par_names %in% fixed_names)
+  npar <- sum(free)
 
   # Famoye: compute frozen lambda bounds at start
   lamLo <- 0; lamHi <- 0
@@ -207,8 +226,9 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     ),
     map = if (length(map) > 0) map else NULL,
     silent = control$print_level == 0L,
-    n_cores = control$n_cores,
-    max_threads = control$max_threads
+    n_cores = configured_threads,
+    max_threads = configured_threads,
+    parallel_tape = control$parallel_tape
   )
   obj <- configured$obj
 
@@ -226,14 +246,14 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   )
 
   # Build named coefficient vector matching par_names
-  coef_vec <- obj$env$last.par.best[seq_along(par_names)]
+  coef_vec <- start
+  coef_vec[free] <- opt$par
   names(coef_vec) <- par_names
 
   # Construct result
   value <- opt$objective
   ll_hat <- -value  # nll -> logLik
 
-  free <- !(par_names %in% fixed_names)
   inference_result <- .rpbnb_inference(
     obj = obj,
     par = opt$par,
@@ -247,6 +267,7 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   )
   m1_hat <- as.numeric(inference_result$report["m1"])
   m2_hat <- as.numeric(inference_result$report["m2"])
+  .warn_boundary_report(inference_result$boundary_report, family_code)
 
   rp_meta <- list(
     Z1 = Z1, Z2 = Z2,
@@ -272,10 +293,16 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     rand_idx1 = rand_idx1,
     rand_idx2 = rand_idx2,
     rp_meta = if (keep == "compact") NULL else rp_meta,
+    model_meta = prep$model_meta,
     optimizer = opt,
     sdreport = inference_result$sdreport,
     obj = if (keep == "full") obj else NULL,
     inference = inference,
+    boundary_report = inference_result$boundary_report,
+    # Frozen at the starting values, not recomputed at the optimum, so a
+    # Famoye lambda estimate can be pinned by a bound the data never implied.
+    # Retained so that artefact is inspectable rather than invisible.
+    lambda_bounds = if (family_code == 0L) c(lower = lamLo, upper = lamHi),
     keep = keep,
     parallel = list(requested = control$n_cores,
                     realized = configured$n_cores),

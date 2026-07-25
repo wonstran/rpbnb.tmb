@@ -33,6 +33,19 @@ simulate_rpbnb_tmb <- function(n, beta1, beta2,
   chk_rand_spec(spec2, beta2, "beta2")
   m1 <- dispersion["m1"]; m2 <- dispersion["m2"]
   r1 <- 1/m1; r2 <- 1/m2
+  valid_dependence <- identical(dependence, "famoye") ||
+    identical(dependence, "independence") ||
+    inherits(dependence, "rpbnb_copula")
+  if (!valid_dependence) {
+    stop('`dependence` must be "famoye", "independence", or copula().',
+         call. = FALSE)
+  }
+  if (inherits(dependence, "rpbnb_copula") &&
+      identical(dependence$family, "normal") &&
+      !requireNamespace("pbivnorm", quietly = TRUE)) {
+    stop("Gaussian copula simulation requires the suggested package ",
+         "`pbivnorm`.", call. = FALSE)
+  }
 
   if (!is.null(seed)) set.seed(seed)
   if (is.null(covariates)) {
@@ -80,12 +93,15 @@ simulate_rpbnb_tmb <- function(n, beta1, beta2,
 
   # Generate counts from joint distribution
   cop_family <- if (inherits(dependence, "rpbnb_copula")) dependence$family else NULL
-  if (identical(dependence, "independence") || lambda == 0) {
+  if (identical(dependence, "independence")) {
     y1 <- rnbinom(n, mu = mu1, size = r1)
     y2 <- rnbinom(n, mu = mu2, size = r2)
   } else if (identical(dependence, "famoye")) {
-    # Use accept-reject or conditional method for Famoye
-    d <- d_const()
+    if (identical(lambda, 0) || isTRUE(lambda == 0)) {
+      y1 <- rnbinom(n, mu = mu1, size = r1)
+      y2 <- rnbinom(n, mu = mu2, size = r2)
+    } else {
+    # Use conditional enumeration for Famoye
     c1 <- c_val(mu1, m1); c2 <- c_val(mu2, m2)
     bnds <- lambda_bounds_vec(c1, c2)
     if (lambda < bnds[1] || lambda > bnds[2])
@@ -104,6 +120,7 @@ simulate_rpbnb_tmb <- function(n, beta1, beta2,
       probs <- nb2 * dep
       probs <- probs / sum(probs)
       y2[i] <- sample(y2_vals, 1, prob = probs)
+    }
     }
   } else if (inherits(dependence, "rpbnb_copula")) {
     y1 <- rnbinom(n, mu = mu1, size = r1)

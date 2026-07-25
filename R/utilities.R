@@ -2,6 +2,17 @@
 #' @noRd
 POISSON_M <- 1e-6
 
+#' Ceiling of the bounded Frank link, shared with the C++ template
+#'
+#' The template maps the working parameter through
+#' \code{theta = FRANK_THETA_MAX * tanh(z_dep / FRANK_THETA_MAX)} so that
+#' \code{exp(-theta * u)} cannot overflow.  The value must match
+#' \code{FRANK_THETA_MAX} in \code{src/rpbnb.tmb.cpp}.  It caps attainable
+#' Frank dependence at Kendall's tau of about 0.891.
+#' @keywords internal
+#' @noRd
+FRANK_THETA_MAX <- 35
+
 #' @keywords internal
 #' @noRd
 .chk_poisson_flag <- function(x, arg) {
@@ -36,15 +47,21 @@ POISSON_M <- 1e-6
   Y2 <- .check_counts(stats::model.response(mf2), "2")
   X1 <- stats::model.matrix(formula_1, mf1)
   X2 <- stats::model.matrix(formula_2, mf2)
+  model_meta <- list(
+    eq1 = list(
+      terms = stats::delete.response(stats::terms(mf1)),
+      xlevels = lapply(mf1[vapply(mf1, is.factor, logical(1))], levels),
+      contrasts = attr(X1, "contrasts")
+    ),
+    eq2 = list(
+      terms = stats::delete.response(stats::terms(mf2)),
+      xlevels = lapply(mf2[vapply(mf2, is.factor, logical(1))], levels),
+      contrasts = attr(X2, "contrasts")
+    )
+  )
   list(Y1 = Y1, Y2 = Y2, X1 = X1, X2 = X2,
        cn1 = colnames(X1), cn2 = colnames(X2),
-       n = length(Y1), data = data_cc)
-}
-
-#' @keywords internal
-#' @noRd
-.bound_mu <- function(X, beta) {
-  pmin(pmax(as.vector(exp(X %*% beta)), 1e-300), 1e15)
+       n = length(Y1), data = data_cc, model_meta = model_meta)
 }
 
 #' @keywords internal
@@ -198,57 +215,27 @@ lambda_bounds_vec <- function(c1, c2) {
   out
 }
 
-.observed_info_vcov <- function(info, par_names, label = "model") {
-  info <- (info + t(info)) / 2
-  ev <- try(eigen(info, symmetric = TRUE, only.values = TRUE), silent = TRUE)
-  bad_eig <- inherits(ev, "try-error") || any(!is.finite(ev$values))
-  min_eig <- if (bad_eig) NA_real_ else min(ev$values)
-  max_eig <- if (bad_eig) NA_real_ else max(ev$values)
-  pd <- isTRUE(!bad_eig && min_eig > 0)
-  ridge <- 0
-  if (!pd) {
-    ridge <- if (bad_eig) 1e-2 else 1e-8 - min_eig
-    info <- info + diag(ridge, nrow(info))
-  }
-  vc <- try(solve(info), silent = TRUE)
-  inv_method <- "solve"
-  if (inherits(vc, "try-error")) { vc <- .pseudo_inv(info); inv_method <- "pseudo_inv" }
-  dimnames(vc) <- list(par_names, par_names)
-  se <- sqrt(pmax(diag(vc), 0)); names(se) <- par_names
-  cond <- if (pd) max_eig / min_eig else NA_real_
-  list(vcov = vc, se = se,
-       diag = list(min_eigenvalue = min_eig, max_eigenvalue = max_eig,
-                   condition = cond, ridge = ridge, inversion = inv_method,
-                   positive_definite = pd, repaired = !pd, label = label))
-}
-
-# Moore-Penrose pseudoinverse via SVD (base R, no MASS dependency)
-.pseudo_inv <- function(x, tol = sqrt(.Machine$double.eps)) {
-  s <- svd(x)
-  d <- s$d
-  d[d > tol] <- 1 / d[d > tol]
-  d[d <= tol] <- 0
-  s$v %*% diag(d, nrow = length(d)) %*% t(s$u)
-}
-
-.free_index_vcov <- function(info, par_names, free, label = "model") {
-  if (all(free)) return(.observed_info_vcov(info, par_names, label = label))
-  sub <- .observed_info_vcov(info[free, free, drop = FALSE], par_names[free], label = label)
-  p <- length(par_names)
-  vc <- matrix(NA_real_, p, p, dimnames = list(par_names, par_names))
-  vc[free, free] <- sub$vcov
-  se <- rep(NA_real_, p); names(se) <- par_names
-  se[free] <- sub$se
-  list(vcov = vc, se = se, diag = sub$diag)
-}
-
+#' Specify a copula dependence model
+#'
+#' Creates a copula specification for \code{fit_rpbnb_tmb()} or
+#' \code{simulate_rpbnb_tmb()}. If \code{par} is omitted during fitting, the
+#' dependence parameter is estimated. Simulation uses independence when it is
+#' omitted.
+#'
+#' @param family Copula family: \code{"frank"}, \code{"normal"} (Gaussian), or
+#'   \code{"kimeldorf"} (Clayton).
+#' @param par Optional natural-scale dependence parameter: Frank theta,
+#'   Gaussian correlation rho, or positive Clayton theta.
+#' @return An object of class \code{rpbnb_copula}.
 #' @export
 copula <- function(family, par = NULL) {
   family <- match.arg(family, c("frank", "normal", "kimeldorf"))
   if (!is.null(par)) {
-    if (family == "normal" && (abs(par) >= 1)) stop("|rho| must be < 1.")
+    if (!is.numeric(par) || length(par) != 1L || !is.finite(par)) {
+      stop("`par` must be one finite numeric value.", call. = FALSE)
+    }
+    if (family == "normal" && abs(par) >= 1) stop("|rho| must be < 1.")
     if (family == "kimeldorf" && par <= 0) stop("Clayton theta must be > 0.")
-    if (family == "frank" && !is.finite(par)) stop("Frank theta must be finite.")
   }
   structure(list(family = family, par = par), class = "rpbnb_copula")
 }
@@ -262,6 +249,22 @@ copula <- function(family, par = NULL) {
 #'   explicitly to opt into a larger memory footprint.
 #' @param max_workload Maximum weighted observation-draw evaluations permitted
 #'   before TMB tape construction. Use \code{Inf} to disable the guard.
+#'
+#'   One weighted unit is one observation-draw of a Famoye or independence
+#'   tape. Measured tape cost is about 850 bytes per unit (Famoye 853, Frank
+#'   857, Gaussian 1070, Clayton 1079 bytes per observation-draw), which is
+#'   where the family weights of 1 and 1.25 come from. The default of
+#'   \code{2.5e6} units therefore encodes a budget of roughly 2.1 GB of
+#'   automatic-differentiation tape for a single fit. Raise it deliberately
+#'   against available memory rather than to make one particular dataset fit.
+#'
+#'   With the default \code{parallel_tape = FALSE} the budget is per fit. With
+#'   \code{parallel_tape = TRUE} the tapes are built concurrently, so the guard
+#'   multiplies the workload by the realized thread count and the budget above
+#'   is shared across them.
+#' @param parallel_tape Construct per-thread TMB tapes concurrently. The
+#'   default \code{FALSE} constructs them sequentially to reduce peak memory;
+#'   objective and gradient evaluation remains parallel.
 #' @param halton_burn Number of leading Halton points to discard.
 #' @export
 rpbnb_tmb_control <- function(iterlim = 500L,
@@ -269,7 +272,8 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               print_level = 0L,
                               n_cores = 1L,
                               max_threads = 4L,
-                              max_workload = 2e6,
+                              max_workload = 2.5e6,
+                              parallel_tape = FALSE,
                               halton_burn = 300L) {
   if (length(n_cores) != 1L || !is.numeric(n_cores) ||
       is.na(n_cores) || !is.finite(n_cores) ||
@@ -289,11 +293,17 @@ rpbnb_tmb_control <- function(iterlim = 500L,
       is.na(max_workload) || max_workload <= 0) {
     stop("max_workload must be one positive number or Inf.", call. = FALSE)
   }
+  if (!is.logical(parallel_tape) || length(parallel_tape) != 1L ||
+      is.na(parallel_tape)) {
+    stop("parallel_tape must be one non-missing logical value.",
+         call. = FALSE)
+  }
   structure(list(iterlim = as.integer(iterlim), reltol = reltol,
                   print_level = as.integer(print_level),
                   n_cores = as.integer(n_cores),
                   max_threads = as.integer(max_threads),
                   max_workload = as.numeric(max_workload),
+                  parallel_tape = parallel_tape,
                   halton_burn = as.integer(halton_burn)),
             class = "rpbnb_tmb_control")
 }
