@@ -52,6 +52,56 @@
   )
 }
 
+#' Profile-likelihood interval for the working dependence parameter
+#'
+#' Returns working-scale endpoints, or \code{NULL} when no profile can be
+#' attempted so the caller can fall back to a Wald interval.
+#' @keywords internal
+#' @noRd
+.dependence_profile_ci <- function(fit, level, ...) {
+  obj <- fit$obj
+  if (is.null(obj)) return(NULL)
+
+  # Presence is not liveness: a fit round-tripped through saveRDS() keeps the
+  # obj field but its external pointer is dead.
+  probe <- try(obj$fn(fit$optimizer$par), silent = TRUE)
+  if (inherits(probe, "try-error") ||
+      length(probe) != 1L || !is.finite(probe)) {
+    return(NULL)
+  }
+
+  # tmbprofile() profiles from last.par.best, not obj$par. Restore it rather
+  # than trusting whatever last touched the objective.
+  obj$env$last.par.best <- fit$optimizer$par
+
+  dots <- list(...)
+  run <- function(extra) {
+    args <- c(list(obj, "z_dep", trace = FALSE), dots, extra)
+    result <- try(do.call(TMB::tmbprofile, args), silent = TRUE)
+    if (inherits(result, "try-error")) NULL else result
+  }
+
+  profile <- run(NULL)
+  if (is.null(profile)) return(NULL)
+  endpoints <- as.numeric(stats::confint(profile, level = level))
+
+  # confint.tmbprofile() locates endpoints with approx(), so an uncrossed
+  # profile yields NA rather than an infinite bound. Widening ytol searches
+  # further before giving up.
+  if (anyNA(endpoints) && !("ytol" %in% names(dots))) {
+    wider <- run(list(ytol = 10))
+    if (!is.null(wider)) {
+      wider_endpoints <- as.numeric(stats::confint(wider, level = level))
+      if (sum(is.na(wider_endpoints)) < sum(is.na(endpoints))) {
+        profile <- wider
+        endpoints <- wider_endpoints
+      }
+    }
+  }
+
+  structure(endpoints, profile = profile)
+}
+
 #' Natural-scale report values and one-parameter derivatives
 #' @keywords internal
 #' @noRd
