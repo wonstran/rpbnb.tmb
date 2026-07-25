@@ -70,13 +70,48 @@
     return(NULL)
   }
 
+  # `obj` is fit$obj's environment, not a copy of it, so the last.par.best
+  # write below is visible to the caller's fit too. Capture the pre-call
+  # value now (before it is ever touched) and restore it on every exit path,
+  # mirroring how TMB::tmbprofile() protects its own obj$env writes via
+  # on.exit(restore.oldvars()). Nothing re-reads fit$obj after this call
+  # today, but leaving the mutation in place would be an unenforced
+  # invariant, not a guarantee.
+  old_last_par_best <- obj$env$last.par.best
+  on.exit(obj$env$last.par.best <- old_last_par_best, add = TRUE)
+
   # tmbprofile() profiles from last.par.best, not obj$par. Restore it rather
   # than trusting whatever last touched the objective.
   obj$env$last.par.best <- fit$optimizer$par
 
   dots <- list(...)
+
+  # `trace` is a real, documented tmbprofile() argument and this function's
+  # own docs promise `...` is forwarded to it. Building `args` as
+  # c(list(obj, "z_dep", trace = FALSE), dots, extra) let a caller-supplied
+  # `trace` collide with the hardcoded one: do.call() then threw "formal
+  # argument matched by multiple actual arguments", which the try() below
+  # swallowed into a silent NULL -- downgrading a legitimate request to a
+  # Wald interval with no diagnostic. Resolve `trace` once and drop it from
+  # `dots` so no duplicate can ever reach do.call().
+  if ("trace" %in% names(dots)) {
+    trace <- dots[["trace"]]
+    dots[["trace"]] <- NULL
+  } else {
+    trace <- FALSE
+  }
+
+  # `obj` and `"z_dep"` are likewise hardcoded (positionally, into
+  # tmbprofile()'s `obj` and `name` formals) and not meant to be overridden --
+  # this function's entire contract is profiling *this* objective at
+  # *z_dep*. A caller-supplied `name` or `obj` in `...` would hit the same
+  # duplicate-argument crash as `trace`; drop them so our fixed values always
+  # win instead of erroring.
+  dots[["obj"]] <- NULL
+  dots[["name"]] <- NULL
+
   run <- function(extra) {
-    args <- c(list(obj, "z_dep", trace = FALSE), dots, extra)
+    args <- c(list(obj, "z_dep", trace = trace), dots, extra)
     result <- try(do.call(TMB::tmbprofile, args), silent = TRUE)
     if (inherits(result, "try-error")) NULL else result
   }

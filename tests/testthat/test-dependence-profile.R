@@ -58,3 +58,47 @@ test_that("a fit without the TMB objective yields NULL, not an error", {
   expect_null(fit$obj)
   expect_null(.dependence_profile_ci(fit, level = 0.95))
 })
+
+test_that("a caller-supplied trace does not silently degrade the profile to NULL", {
+  fit <- fit_rpbnb_tmb(
+    y1 ~ x, y2 ~ x, dp_test_data(),
+    dependence = copula("normal"), draws = 1L, keep = "full"
+  )
+
+  # trace is a real, documented TMB::tmbprofile() argument, and this
+  # function's own docs promise `...` is forwarded to it. Before the fix,
+  # supplying it collided with the hardcoded `trace = FALSE` inside
+  # do.call(), which threw "formal argument matched by multiple actual
+  # arguments" -- caught by the inner try() and converted to NULL, so the
+  # caller silently fell back to a Wald interval with no diagnostic.
+  ci_trace_true <- .dependence_profile_ci(fit, level = 0.95, trace = TRUE)
+  expect_false(is.null(ci_trace_true))
+  expect_length(as.numeric(ci_trace_true), 2L)
+
+  ci_trace_false <- .dependence_profile_ci(fit, level = 0.95, trace = FALSE)
+  expect_false(is.null(ci_trace_false))
+  expect_length(as.numeric(ci_trace_false), 2L)
+})
+
+test_that("the pre-call last.par.best is restored after profiling, even when it differs from optimizer$par", {
+  fit <- fit_rpbnb_tmb(
+    y1 ~ x, y2 ~ x, dp_test_data(),
+    dependence = copula("normal"), draws = 1L, keep = "full"
+  )
+
+  # obj is fit$obj's environment, not a copy: .dependence_profile_ci()
+  # overwrites obj$env$last.par.best with fit$optimizer$par before profiling.
+  # TMB::tmbprofile() restores that back to fit$optimizer$par on its own
+  # on.exit, but nothing restores it to whatever it held *before*
+  # .dependence_profile_ci() was called -- so any caller-visible state
+  # predating this call is lost. A freshly-fitted `fit$obj$env$last.par.best`
+  # already equals fit$optimizer$par, which would let a missing fix pass this
+  # test by coincidence -- force a sentinel value that differs from
+  # fit$optimizer$par so the assertion actually exercises the restore path.
+  sentinel <- fit$optimizer$par + 1
+  fit$obj$env$last.par.best <- sentinel
+
+  ci <- .dependence_profile_ci(fit, level = 0.95)
+  expect_false(is.null(ci))
+  expect_identical(fit$obj$env$last.par.best, sentinel)
+})
