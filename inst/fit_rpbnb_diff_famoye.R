@@ -28,7 +28,7 @@ sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 # max_workload. Raise both deliberately if you have the memory.
 n_obs <- 5000L
 draws <- 200L
-n_cores <- 8 #parallel::detectCores(logical = FALSE)
+n_cores <- 12 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
