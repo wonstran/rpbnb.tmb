@@ -58,6 +58,22 @@ limit (NB2 dispersion m = 0, held fixed).}
 \value{
 An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 is a compact package-owned summary and does not retain a second TMB tape.
+
+\code{boundary_report} is a character vector naming the reported
+quantities whose estimates are pinned against an implementation bound --
+the frozen Famoye interval, the Frank overflow guard, or an \code{exp()}
+clamp -- or whose delta-method derivative has collapsed numerically. Those
+estimates are set by the implementation rather than identified by the
+data, so their standard errors and covariances are reported as \code{NA}
+and a warning is raised. An empty vector means no such constraint bound.
+
+\code{lambda_bounds} is a named numeric vector \code{c(lower =, upper =)}
+giving the admissible Famoye dependence interval, and \code{NULL} for
+every other dependence structure. The bounds are computed once at the
+starting values and held fixed for the whole fit; they are \emph{not}
+recomputed at the optimum. A \code{lam} estimate at either end is
+therefore an artefact of the starting values rather than a property of the
+data, which is why the field is exposed.
 }
 \description{
 Maximum simulated likelihood via TMB (Template Model Builder) with
