@@ -81,7 +81,9 @@ every other dependence structure. The bounds are computed once at the
 starting values and held fixed for the whole fit; they are \emph{not}
 recomputed at the optimum. A \code{lam} estimate at either end is
 therefore an artefact of the starting values rather than a property of the
-data, which is why the field is exposed.
+data, which is why the field is exposed. For an interval that remains valid
+at such an optimum, see
+\code{\link{rpbnb_tmb_dependence_profile}}.
 }
 \description{
 Maximum simulated likelihood via TMB (Template Model Builder) with

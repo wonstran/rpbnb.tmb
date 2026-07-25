@@ -342,7 +342,7 @@
   if (length(dependence)) {
     cause <- switch(
       as.character(family_code),
-      "0" = "the Famoye bounds frozen at the starting values",
+      "0" = "the Famoye bounds, which are frozen at the starting values",
       "1" = sprintf(
         "the Frank overflow guard (|theta| < %g)", FRANK_THETA_MAX
       ),
@@ -356,7 +356,8 @@
       ". The estimates are constrained by the implementation rather than ",
       "identified by the data, so their standard errors are reported as NA. ",
       "Refit from different starting values, or use a dependence family whose ",
-      "range covers the association in these data.",
+      "range covers the association in these data. ",
+      "rpbnb_tmb_dependence_profile() gives an interval that stays valid here.",
       call. = FALSE
     )
   }
