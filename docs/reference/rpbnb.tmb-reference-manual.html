@@ -15,6 +15,10 @@
   h2 { border-top: 1px solid var(--rule); font-size: 17pt; line-height: 1.15;
        margin: 24pt 0 10pt; padding-top: 8pt; }
   h3 { break-after: avoid; font-size: 12.5pt; margin: 14pt 0 5pt; page-break-after: avoid; }
+  /* The final "See Also" of a long entry can otherwise land alone atop the
+     next page, stranding the rest of that page blank: keep it glued to
+     whatever precedes it. */
+  .entry > h3:last-of-type { break-before: avoid; page-break-before: avoid; }
   h4 { font-size: 10.5pt; margin: 12pt 0 3pt; text-transform: uppercase; letter-spacing: .05em; }
   p { margin: 0 0 8pt; }
   .subtitle { color: var(--muted); font-size: 12pt; margin: 0; }
@@ -69,6 +73,7 @@
     <li><a href="#copula">copula</a></li>
     <li><a href="#marginal-effects">rpbnb_tmb_marginal_effects</a></li>
     <li><a href="#elasticities">rpbnb_tmb_elasticities</a></li>
+    <li><a href="#dependence-profile">rpbnb_tmb_dependence_profile</a></li>
     <li><a href="#fit-methods">Methods for rpbnb_tmb_fit</a></li>
     <li><a href="#model-notes">Model, dependence, and random-coefficient notes</a></li>
     <li><a href="#references">References and citation</a></li>
@@ -109,6 +114,8 @@ ctrl &lt;- rpbnb_tmb_control(n_cores = 1L)
               draws = 400L, seed = 1234L, start = NULL,
               dependence = "famoye",
               control = rpbnb_tmb_control(),
+              inference = c("full", "diag", "none"),
+              keep = c("postfit", "compact", "full"),
               poisson_1 = FALSE, poisson_2 = FALSE)</code></pre>
   <h3>Arguments</h3>
   <dl>
@@ -120,12 +127,15 @@ ctrl &lt;- rpbnb_tmb_control(n_cores = 1L)
     <dt>start</dt><dd>Optional named or positional starting vector. Names must match the model's parameter names when supplied.</dd>
     <dt>dependence</dt><dd><code>"famoye"</code>, <code>"independence"</code>, or an object returned by <code>copula()</code>.</dd>
     <dt>control</dt><dd>A control object from <code>rpbnb_tmb_control()</code>.</dd>
+    <dt>inference</dt><dd><code>"full"</code> for a full covariance matrix, <code>"diag"</code> for standard errors only (<code>vcov()</code> then returns <code>NA</code> for cross-terms), or <code>"none"</code> to skip Hessian calculations entirely.</dd>
+    <dt>keep</dt><dd>Retained fit state: <code>"postfit"</code> keeps data needed for marginal effects, <code>"compact"</code> keeps estimates only, and <code>"full"</code> also retains the TMB objective and responses. Low-level diagnostics that access <code>fit$obj</code> -- including the profile method of <a href="#dependence-profile">rpbnb_tmb_dependence_profile</a> -- require <code>"full"</code>.</dd>
     <dt>poisson_1, poisson_2</dt><dd>Logical flags fixing the selected margin at its Poisson-limit dispersion.</dd>
   </dl>
   <h3>Value</h3>
   <p>An object of class <code>rpbnb_tmb_fit</code>. Important components include <code>coef</code>, <code>vcov</code>, <code>se</code>, <code>logLik</code>, <code>nobs</code>, <code>npar</code>, <code>m1</code>, <code>m2</code>, <code>optimizer</code>, <code>sdreport</code>, and <code>parallel</code>. The <code>parallel</code> component records the requested and realized TMB thread counts.</p>
+  <p>For Famoye dependence, <code>lambda_bounds</code> gives the admissible <code>c(lower =, upper =)</code> interval, computed once at the starting values and held fixed for the whole fit. <code>boundary_report</code> names any reported quantity pinned against an implementation bound -- the frozen Famoye interval, the Frank overflow guard, a saturated Gaussian link, or a Clayton <code>exp()</code> clamp -- or whose delta-method derivative has collapsed numerically, with <code>boundary_sides</code> recording which end (<code>"lower"</code>, <code>"upper"</code>, or <code>"degenerate"</code>) was reached. Those estimates are set by the implementation rather than identified by the data, so their standard errors are reported as <code>NA</code> and a warning is raised; see <a href="#dependence-profile">rpbnb_tmb_dependence_profile</a> for a valid interval instead.</p>
   <h3>Details</h3>
-  <p>For copula dependence, Poisson-limit margins are not supported. The fitting routine checks the random-coefficient names against their equation's model matrix and validates the allowed dependence specification before constructing the TMB objective.</p>
+  <p>For copula dependence, Poisson-limit margins are not supported. The fitting routine checks the random-coefficient names against their equation's model matrix and validates the allowed dependence specification before constructing the TMB objective. Before building the TMB tape, it also checks the fit's weighted workload (<code>n * draws</code>, family-weighted) against <code>control$max_workload</code> and errors if the budget is exceeded; see <a href="#rpbnb-tmb-control">rpbnb_tmb_control</a> for the memory-guard details.</p>
   <h3>Examples</h3>
   <pre><code class="example">sim &lt;- simulate_rpbnb_tmb(n = 20,
   beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
@@ -137,7 +147,7 @@ ctrl &lt;- rpbnb_tmb_control(n_cores = 1L)
 #   random_1 = "x1", draws = 20L,
 #   dependence = "famoye",
 #   control = rpbnb_tmb_control(n_cores = 1L))</code></pre>
-  <h3>See Also</h3><p><a href="#rpbnb-tmb-control">rpbnb_tmb_control</a>, <a href="#copula">copula</a>, <a href="#fit-methods">methods for fitted objects</a>.</p>
+  <h3>See Also</h3><p><a href="#rpbnb-tmb-control">rpbnb_tmb_control</a>, <a href="#copula">copula</a>, <a href="#fit-methods">methods for fitted objects</a>, <a href="#dependence-profile">rpbnb_tmb_dependence_profile</a>.</p>
 </section>
 
 <section class="entry" id="simulate-rpbnb-tmb">
@@ -174,10 +184,13 @@ head(sim$data)</code></pre>
 
 <section class="entry" id="rpbnb-tmb-control">
   <h2>Control parameters for rpbnb.tmb estimation</h2>
-  <h3>Description</h3><p>Creates a validated control object for optimization, TMB verbosity, OpenMP thread requests, and Halton-draw burn-in.</p>
+  <h3>Description</h3><p>Creates a validated control object for optimization, TMB verbosity, OpenMP thread requests, Halton-draw burn-in, and a memory-usage guard on TMB tape construction.</p>
   <h3>Usage</h3>
   <pre><code>rpbnb_tmb_control(iterlim = 500L, reltol = 1e-8,
                   print_level = 0L, n_cores = 1L,
+                  max_threads = 4L,
+                  max_workload = .calibration_default_workload(),
+                  parallel_tape = FALSE,
                   halton_burn = 300L)</code></pre>
   <h3>Arguments</h3>
   <dl>
@@ -185,6 +198,9 @@ head(sim$data)</code></pre>
     <dt>reltol</dt><dd>Relative convergence tolerance passed to <code>nlminb()</code>.</dd>
     <dt>print_level</dt><dd>Nonnegative verbosity level used by the fitting process.</dd>
     <dt>n_cores</dt><dd>One whole-number TMB/OpenMP thread request. The installed TMB DLL can realize fewer threads; inspect <code>fit$parallel</code> after fitting.</dd>
+    <dt>max_threads</dt><dd>Maximum OpenMP threads permitted for one fit; <code>n_cores</code> requests above this are capped. Raise it explicitly to opt into a larger memory footprint.</dd>
+    <dt>max_workload</dt><dd>Maximum weighted observation-draw evaluations (<code>n * draws</code>, family-weighted) permitted before TMB tape construction; <code>Inf</code> disables the guard. The default targets a peak working set of about 8 GiB for one fit, calibrated by <code>inst/benchmark_memory.R</code>. Family weights relative to Famoye (<code>1</code>): independence <code>0.7</code>, Frank <code>2.9</code>, Gaussian <code>1.1</code>, Clayton <code>1</code>. With <code>parallel_tape = TRUE</code> the guard multiplies the workload by the realized thread count, since tapes are then built concurrently.</dd>
+    <dt>parallel_tape</dt><dd>Construct per-thread TMB tapes concurrently. The default <code>FALSE</code> builds them sequentially to reduce peak memory; objective and gradient evaluation remain parallel regardless.</dd>
     <dt>halton_burn</dt><dd>Number of leading Halton points discarded before simulation draws are used.</dd>
   </dl>
   <h3>Value</h3><p>An object of class <code>rpbnb_tmb_control</code>.</p>
@@ -240,6 +256,26 @@ copula("kimeldorf", par = 1.2)</code></pre>
   <h3>See Also</h3><p><a href="#marginal-effects">rpbnb_tmb_marginal_effects</a>.</p>
 </section>
 
+<section class="entry" id="dependence-profile">
+  <h2>Confidence interval for a fitted dependence parameter</h2>
+  <h3>Description</h3><p>Returns a profile-likelihood interval for the dependence parameter of a fitted model, computed on the unconstrained working scale and mapped through the family's monotone link. This is the tool to reach for when <code>summary()</code> reports <code>NA</code> for the dependence standard error.</p>
+  <h3>Usage</h3>
+  <pre><code>rpbnb_tmb_dependence_profile(fit, level = 0.95,
+                              method = c("profile", "wald"), ...)</code></pre>
+  <h3>Arguments</h3>
+  <dl>
+    <dt>fit</dt><dd>An <code>rpbnb_tmb_fit</code> object.</dd>
+    <dt>level</dt><dd>Coverage level; one number strictly between 0 and 1. Default <code>0.95</code>.</dd>
+    <dt>method</dt><dd><code>"profile"</code> (default) for a profile-likelihood interval, or <code>"wald"</code> for a Wald interval on the working scale mapped through the same link. <code>"profile"</code> requires the TMB objective, retained only under <code>keep = "full"</code>; when unavailable this degrades to <code>"wald"</code> with a warning naming the actual cause, rather than failing.</dd>
+    <dt>...</dt><dd>Passed to <code>TMB::tmbprofile()</code>, e.g. <code>ytol</code> or <code>parm.range</code>. <code>lincomb</code> and <code>slice</code> are rejected: the first would silently profile a different quantity than <code>z_dep</code>, and the second returns a likelihood slice rather than a profile.</dd>
+  </dl>
+  <h3>Value</h3><p>A data frame with one row per reported dependence quantity and columns <code>parameter</code>, <code>estimate</code>, <code>lower</code>, <code>upper</code>, <code>level</code>, and <code>method</code> -- the method actually used, which may differ from the one requested. The raw profile, when one was computed, is attached as <code>attr(, "profile")</code> so it can be plotted.</p>
+  <h3>Details</h3><p>At a boundary the delta-method derivative collapses, so <code>SE = |d&theta;/dz| * SE(z)</code> is a zero-times-infinity product and no symmetric standard error exists; a profile interval needs no derivative. For Famoye this is the usual situation: <code>lambda_bounds</code> is frozen at the starting values, so a pinned estimate's interval is still bounded by that same frozen box, not an escape from it -- widen it first by refitting from better starting values.</p>
+  <h3>Examples</h3><pre><code class="example"># Not run during manual build:
+# rpbnb_tmb_dependence_profile(fit, level = 0.95)</code></pre>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>.</p>
+</section>
+
 <section class="entry" id="fit-methods">
   <h2>Methods for rpbnb_tmb_fit objects</h2>
   <h3>Description</h3><p>Standard methods expose fitted-model quantities and concise reporting for objects returned by <code>fit_rpbnb_tmb()</code>.</p>
@@ -251,30 +287,34 @@ vcov(object, ...)
 logLik(object, ...)
 AIC(object, ...)
 BIC(object, ...)
-predict(object, ...)</code></pre>
+predict(object, newdata = NULL,
+        type = c("response", "link"),
+        which = c("both", "y1", "y2"), ...)</code></pre>
   <h3>Details</h3>
   <ul>
     <li><code>print()</code> reports the likelihood, observation and parameter counts, realized TMB threads, dependence specification, and rounded coefficients.</li>
-    <li><code>summary()</code> prints equation coefficients, random-coefficient scale summaries, dispersions, and dependence information when available from <code>sdreport</code>.</li>
+    <li><code>summary()</code> prints equation coefficients, random-coefficient scale summaries, dispersions, and dependence information when available from <code>sdreport</code>. A dependence or dispersion estimate pinned against an implementation bound (see <code>boundary_report</code> under <a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>) prints its standard error as <code>NA</code> rather than a misleading number; use <a href="#dependence-profile">rpbnb_tmb_dependence_profile</a> for a valid interval instead.</li>
     <li><code>coef()</code> returns the named parameter vector and <code>vcov()</code> returns the fitted covariance matrix.</li>
     <li><code>logLik()</code> attaches degrees of freedom and observation count; <code>AIC()</code> and <code>BIC()</code> use the stored log likelihood and parameter count.</li>
-    <li><code>predict()</code> currently returns a coefficient-based object of class <code>rpbnb_tmb_pred</code>; it does not calculate new-data fitted means.</li>
+    <li><code>predict()</code> returns fitted response means (or, with <code>type = "link"</code>, their log) for the retained fitting design or a supplied <code>newdata</code>, integrating over retained simulation draws when random coefficients are present. The result is a two-column numeric matrix for <code>which = "both"</code>, otherwise a numeric vector. Compact fits (<code>keep = "compact"</code>) require <code>newdata</code>, since the fitting design is not retained.</li>
   </ul>
   <h3>Examples</h3><pre><code class="example"># Not run during manual build:
 # coef(fit)
 # vcov(fit)
 # logLik(fit)
 # AIC(fit)
-# BIC(fit)</code></pre>
-  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>.</p>
+# BIC(fit)
+# predict(fit)</code></pre>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>, <a href="#dependence-profile">rpbnb_tmb_dependence_profile</a>.</p>
 </section>
 
 <section class="entry" id="model-notes">
   <h2>Model, dependence, and random-coefficient notes</h2>
   <h3>Negative-binomial margins</h3><p>Each equation has its own mean specification and NB2 dispersion parameter. Set <code>poisson_1</code> or <code>poisson_2</code> in <code>fit_rpbnb_tmb()</code> only for a requested Poisson-limit margin.</p>
-  <h3>Dependence choices</h3><p><code>"famoye"</code> estimates a Famoye/Sarmanov dependence parameter subject to admissible bounds. <code>"independence"</code> omits the estimated dependence parameter. Copula specifications use Frank, Gaussian, or Kimeldorf/Clayton discrete-copula dependence.</p>
+  <h3>Dependence choices</h3><p><code>"famoye"</code> estimates a Famoye/Sarmanov dependence parameter subject to admissible bounds. <code>"independence"</code> omits the estimated dependence parameter. Copula specifications use Frank, Gaussian, or Kimeldorf/Clayton discrete-copula dependence. A dependence estimate pinned at an implementation bound -- <code>lam</code> at a Famoye bound, <code>|theta|</code> at the Frank overflow guard, <code>|rho| = 1</code> for Gaussian, or the Clayton <code>exp()</code> clamp -- reports its standard error as <code>NA</code> because the estimate is set by the implementation rather than identified by the data; see <a href="#dependence-profile">rpbnb_tmb_dependence_profile</a> for a profile-likelihood or Wald interval instead.</p>
   <h3>Random coefficients</h3><p>Random coefficients are equation-specific and their variable names must occur in the corresponding formula. An unnamed character vector requests Normal distributions. A named list can select Normal, lognormal, uniform, or triangular distributions; a lognormal specification may include <code>sign = -1</code> or <code>sign = 1</code>.</p>
   <div class="note"><strong>Threading note.</strong> <code>n_cores</code> requests an OpenMP thread count for the loaded TMB DLL. The realized count can be lower on a given build or platform. Inspect <code>fit$parallel$requested</code> and <code>fit$parallel$realized</code> after fitting.</div>
+  <div class="note"><strong>Memory guard.</strong> Estimation memory scales with <code>n * draws</code> (family-weighted). <code>rpbnb_tmb_control()</code>'s <code>max_workload</code> rejects fits above a calibrated peak-memory budget before the TMB tape is built, and the default <code>parallel_tape = FALSE</code> keeps that peak from scaling with thread count. Raise <code>max_workload</code> deliberately against the memory you actually have; see <a href="#rpbnb-tmb-control">rpbnb_tmb_control</a>.</div>
 </section>
 
 <section class="entry" id="references">
