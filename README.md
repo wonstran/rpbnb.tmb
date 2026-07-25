@@ -21,7 +21,7 @@ fit <- fit_rpbnb_tmb(
   control = rpbnb_tmb_control(
     n_cores = 4,
     max_threads = 4,
-    max_workload = 2.5e6
+    max_workload = 2e6
   )
 )
 ```
@@ -44,12 +44,22 @@ results. Advanced users can opt into concurrent tape construction with
 `max_threads` caps per-fit concurrency.
 
 `max_workload` rejects oversized observation-by-draw workloads before the
-automatic-differentiation tape is built. One weighted unit is one
-observation-draw of a Famoye or independence tape, measured at roughly 850
-bytes; copula families carry a weight of 1.25. The default of `2.5e6` units
-therefore encodes a budget of about 2.1 GB of tape per fit. Raise it
-deliberately against the memory you actually have; `max_workload = Inf`
-disables the guard.
+automatic-differentiation tape is built. One unit is one observation-draw.
+Measured on a 12-point grid (n from 500 to 4000, draws from 50 to 200, single
+threaded), tape size depends on `n * draws` alone to within 2.6%:
+
+```
+tape (MB) = 17.7 + 0.001117 * units          R^2 = 0.999
+```
+
+The slope is 1171 bytes per unit overall, rising to about 1215 over the largest
+workloads — the conservative figure the default is set from. All dependence
+families carry weight 1; the Gaussian copula tape is 7–9% *smaller* than
+Famoye's at matched workload, because the atomic bivariate-normal kernel
+compresses its quadrature. The default of `2e6` units admits fits whose tape
+reaches roughly 2.3 GB, with objective and gradient evaluation adding about
+another 55% for a working footprint near 3.5 GB. Raise it deliberately against
+the memory you actually have; `max_workload = Inf` disables the guard.
 
 ## Boundary-constrained dependence estimates
 

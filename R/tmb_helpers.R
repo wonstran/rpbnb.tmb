@@ -67,7 +67,14 @@
 .check_tmb_workload <- function(n, draws, family_code, max_workload,
                                 n_threads = 1L, parallel_tape = FALSE) {
   if (is.infinite(max_workload)) return(invisible(0))
-  family_weight <- if (family_code %in% c(2L, 3L)) 1.25 else 1
+  # Measured on a 12-point grid (n in 500..4000, draws in 50..200, one thread):
+  # tape size depends on n * draws alone to within 2.6%, and the copula
+  # families are no more expensive than Famoye -- the Gaussian tape is actually
+  # 7-9% smaller at matched workload, because the atomic bivariate-normal
+  # kernel compresses its quadrature.  An earlier 1.25 weight came from two
+  # measurements taken while another job was competing for memory; a clean
+  # sequential grid does not reproduce it.
+  family_weight <- 1
   tape_multiplier <- if (isTRUE(parallel_tape)) as.double(n_threads) else 1
   workload <- as.double(n) * as.double(draws) *
     family_weight * tape_multiplier

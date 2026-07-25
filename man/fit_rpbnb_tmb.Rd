@@ -67,6 +67,14 @@ estimates are set by the implementation rather than identified by the
 data, so their standard errors and covariances are reported as \code{NA}
 and a warning is raised. An empty vector means no such constraint bound.
 
+\code{boundary_sides} names, for each entry of \code{boundary_report},
+which end was reached: \code{"lower"}, \code{"upper"}, or
+\code{"degenerate"} when the derivative collapsed rather than a bound
+being hit. The two sides call for opposite remedies -- a lower dispersion
+clamp means the margin is effectively Poisson, an upper one means it is
+degenerately over-dispersed -- so this is retained on the fit rather than
+only mentioned in the warning.
+
 \code{lambda_bounds} is a named numeric vector \code{c(lower =, upper =)}
 giving the admissible Famoye dependence interval, and \code{NULL} for
 every other dependence structure. The bounds are computed once at the

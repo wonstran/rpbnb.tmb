@@ -163,16 +163,25 @@ test_that("Gaussian is flagged only once tanh has actually saturated", {
   expect_true(is.finite(saturated$tau$derivative))
 })
 
-test_that("a hard clamp flags only once it is actually activated", {
-  # pmin/pmax clamps are the identity inside (-20, 20): at z = 19.3 the value,
-  # objective and derivative are exactly what an unclamped implementation
-  # would give, so flagging on proximity would be a false positive.
+test_that("a hard clamp flags once reached, but not before", {
+  # pmin/pmax clamps are the identity strictly inside (-20, 20): at z = 19.3
+  # the value, objective and derivative are exactly what an unclamped
+  # implementation would give, so flagging there would be a false positive.
+  expect_false(natural_report(1, 3L)$theta$boundary)
   expect_false(natural_report(19.3, 3L)$theta$boundary)
-  expect_false(natural_report(20, 3L)$theta$boundary)
+
+  # Exact equality is a kink, not an interior point: the left derivative is
+  # exp(20) and the right is 0, so the delta method has no unique derivative.
+  # The template's CondExp picks the pass-through branch and clamp_deriv()
+  # matches it, but that is a mechanical detail, not identified inference.
+  expect_true(natural_report(20, 3L)$theta$boundary)
+  expect_identical(natural_report(20, 3L)$theta$side, "upper")
+  expect_true(natural_report(-20, 3L)$theta$boundary)
+  expect_identical(natural_report(-20, 3L)$theta$side, "lower")
+
   expect_true(natural_report(20.5, 3L)$theta$boundary)
   expect_true(natural_report(25, 3L)$theta$boundary)
   expect_true(natural_report(25, 3L)$tau$boundary)
-  expect_false(natural_report(1, 3L)$theta$boundary)
 })
 
 test_that("a clamped dispersion parameter is flagged with its side", {
@@ -193,6 +202,29 @@ test_that("a clamped dispersion parameter is flagged with its side", {
   high <- dispersion_report(25)
   expect_true(high$m1$boundary)
   expect_identical(high$m1$side, "upper")
+
+  # The kink at exact equality is flagged too.
+  expect_true(dispersion_report(-20)$m1$boundary)
+  expect_identical(dispersion_report(-20)$m1$side, "lower")
+})
+
+test_that("boundary side metadata survives on the fitted object", {
+  # A suppressed or scrolled-past warning must not be the only place the side
+  # is recorded: lower and upper clamps call for opposite remedies.
+  fit <- fit_rpbnb_tmb(
+    y1 ~ x, y2 ~ x,
+    data = inference_test_data(),
+    dependence = copula("frank"),
+    start = c(z_dep = 200),
+    control = rpbnb_tmb_control(iterlim = 1L, n_cores = 1L)
+  ) |> suppressWarnings()
+
+  expect_true(length(fit$boundary_report) > 0)
+  expect_named(fit$boundary_sides)
+  expect_setequal(names(fit$boundary_sides), fit$boundary_report)
+  expect_true(all(
+    fit$boundary_sides %in% c("lower", "upper", "degenerate")
+  ))
 })
 
 test_that("independence and interior dispersion reports are not flagged", {

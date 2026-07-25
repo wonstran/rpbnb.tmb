@@ -10,7 +10,7 @@ rpbnb_tmb_control(
   print_level = 0L,
   n_cores = 1L,
   max_threads = 4L,
-  max_workload = 2500000,
+  max_workload = 2e+06,
   parallel_tape = FALSE,
   halton_burn = 300L
 )
@@ -30,13 +30,23 @@ explicitly to opt into a larger memory footprint.}
 \item{max_workload}{Maximum weighted observation-draw evaluations permitted
 before TMB tape construction. Use \code{Inf} to disable the guard.
 
-One weighted unit is one observation-draw of a Famoye or independence
-tape. Measured tape cost is about 850 bytes per unit (Famoye 853, Frank
-857, Gaussian 1070, Clayton 1079 bytes per observation-draw), which is
-where the family weights of 1 and 1.25 come from. The default of
-\code{2.5e6} units therefore encodes a budget of roughly 2.1 GB of
-automatic-differentiation tape for a single fit. Raise it deliberately
-against available memory rather than to make one particular dataset fit.
+One unit is one observation-draw. Measured on a 12-point grid (n from 500
+to 4000, draws from 50 to 200, single-threaded), tape size depends on
+\code{n * draws} alone to within 2.6\% and is well described by
+
+\deqn{\mathrm{tape\ (MB)} \approx 17.7 + 0.001117 \times \mathrm{units}}
+
+with \eqn{R^2 = 0.999}. The slope is 1171 bytes per unit overall and
+rises to about 1215 bytes per unit over the largest workloads, which is
+the figure the default is set from; per-unit cost is higher at very small
+workloads because of the fixed 17.7 MB intercept. The copula families are
+not more expensive than Famoye -- the Gaussian tape is 7-9\% smaller at
+matched workload -- so all families carry weight 1.
+
+The default of \code{2e6} units therefore admits fits whose tape reaches
+roughly 2.3 GB; objective and gradient evaluation add about another 55\%,
+for a working footprint near 3.5 GB. Raise it deliberately against the
+memory you actually have, not to make one particular dataset fit.
 
 With the default \code{parallel_tape = FALSE} the budget is per fit. With
 \code{parallel_tape = TRUE} the tapes are built concurrently, so the guard

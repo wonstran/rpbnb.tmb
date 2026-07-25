@@ -117,18 +117,17 @@ test_that("TMB tape construction is sequential unless explicitly enabled", {
   expect_identical(TMB::config(DLL = "rpbnb.tmb")$tape.parallel, 1L)
 })
 
-test_that("weighted workload guard fails early and supports explicit opt-out", {
+test_that("the workload guard rejects exactly at its limit and opts out", {
+  # n * draws = 1000 for every family, since all weights are 1.
   expect_error(
     .check_tmb_workload(
-      n = 100L, draws = 10L, family_code = 2L,
-      max_workload = 1249
+      n = 100L, draws = 10L, family_code = 2L, max_workload = 999
     ),
     "max_workload"
   )
   expect_no_error(
     .check_tmb_workload(
-      n = 100L, draws = 10L, family_code = 2L,
-      max_workload = 1250
+      n = 100L, draws = 10L, family_code = 2L, max_workload = 1000
     )
   )
   expect_no_error(
@@ -139,23 +138,27 @@ test_that("weighted workload guard fails early and supports explicit opt-out", {
   )
 })
 
-test_that("workload weights follow measured tape cost and taping policy", {
-  expect_no_error(.check_tmb_workload(
-    n = 1000L, draws = 400L, family_code = 1L,
-    max_workload = 400000, n_threads = 8L, parallel_tape = FALSE
-  ))
-  expect_error(.check_tmb_workload(
-    n = 1000L, draws = 400L, family_code = 2L,
-    max_workload = 499999, n_threads = 8L, parallel_tape = FALSE
-  ), "max_workload")
-  expect_no_error(.check_tmb_workload(
-    n = 1000L, draws = 400L, family_code = 2L,
-    max_workload = 500000, n_threads = 8L, parallel_tape = FALSE
-  ))
+test_that("concurrent taping, and only that, multiplies the budget", {
+  # Sequential taping: the thread count is irrelevant to the guard.
+  for (family_code in c(-1L, 0L, 1L, 2L, 3L)) {
+    expect_no_error(.check_tmb_workload(
+      n = 1000L, draws = 400L, family_code = family_code,
+      max_workload = 400000, n_threads = 8L, parallel_tape = FALSE
+    ))
+    expect_error(.check_tmb_workload(
+      n = 1000L, draws = 400L, family_code = family_code,
+      max_workload = 399999, n_threads = 8L, parallel_tape = FALSE
+    ), "max_workload")
+  }
+  # Concurrent taping: n_threads full-size recordings are alive at once.
   expect_error(.check_tmb_workload(
     n = 1000L, draws = 400L, family_code = 1L,
     max_workload = 3199999, n_threads = 8L, parallel_tape = TRUE
   ), "max_workload")
+  expect_no_error(.check_tmb_workload(
+    n = 1000L, draws = 400L, family_code = 1L,
+    max_workload = 3200000, n_threads = 8L, parallel_tape = TRUE
+  ))
 })
 
 # Asserting that one particular dataset size lands under the limit locks in a
@@ -174,9 +177,12 @@ test_that("the workload guard is linear in its inputs", {
   expect_equal(base, 1e5)
   expect_equal(cost(2000L, 100L, 0L), 2 * base)
   expect_equal(cost(1000L, 200L, 0L), 2 * base)
+  # A measured grid shows tape size depends on n * draws alone, with the
+  # copula families no more expensive than Famoye, so every family weighs 1.
   expect_equal(cost(1000L, 100L, 1L), base)
-  expect_equal(cost(1000L, 100L, 2L), 1.25 * base)
-  expect_equal(cost(1000L, 100L, 3L), 1.25 * base)
+  expect_equal(cost(1000L, 100L, 2L), base)
+  expect_equal(cost(1000L, 100L, 3L), base)
+  expect_equal(cost(1000L, 100L, -1L), base)
 })
 
 test_that("threads multiply the workload only under concurrent taping", {
@@ -190,16 +196,23 @@ test_that("threads multiply the workload only under concurrent taping", {
   expect_equal(cost(n_threads = 8L, parallel_tape = TRUE), 8e5)
 })
 
-test_that("the default budget leaves headroom for realistic fits", {
-  # The largest shipped demo is the full rwm1984 extract at 400 draws.  The
-  # guard should admit it comfortably, not by a rounding margin -- otherwise a
-  # slightly larger dataset trips a limit that reflects no real memory cost.
-  default_budget <- rpbnb_tmb_control()$max_workload
-  for (family_code in c(0L, 1L, 2L, 3L)) {
-    weight <- if (family_code %in% c(2L, 3L)) 1.25 else 1
-    used <- 3874 * 400 * weight
-    expect_lt(used / default_budget, 0.85)
-  }
+test_that("the default budget matches the memory model it is documented from", {
+  # Asserting that one particular dataset fits under the limit locks in a
+  # coincidence and goes stale when the dataset changes.  Assert the actual
+  # contract instead: the default is derived from a measured bytes-per-unit
+  # figure and a stated tape budget, so those three numbers must agree.
+  #
+  # Measured on a 12-point grid (n 500..4000, draws 50..200, one thread):
+  #   tape_MB = 17.7 + 0.001117 * units,  R^2 = 0.999
+  # with the slope rising to ~1215 bytes/unit over the largest workloads,
+  # which is the conservative figure the default is set from.
+  bytes_per_unit <- 1215
+  documented_budget_gb <- 2.3
+
+  default_units <- rpbnb_tmb_control()$max_workload
+  implied_gb <- default_units * bytes_per_unit / 1024^3
+
+  expect_equal(implied_gb, documented_budget_gb, tolerance = 0.05)
 })
 
 test_that("TMB thread configuration realizes a valid request", {

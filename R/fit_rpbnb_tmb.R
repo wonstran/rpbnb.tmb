@@ -37,6 +37,14 @@
 #'   data, so their standard errors and covariances are reported as \code{NA}
 #'   and a warning is raised. An empty vector means no such constraint bound.
 #'
+#'   \code{boundary_sides} names, for each entry of \code{boundary_report},
+#'   which end was reached: \code{"lower"}, \code{"upper"}, or
+#'   \code{"degenerate"} when the derivative collapsed rather than a bound
+#'   being hit. The two sides call for opposite remedies -- a lower dispersion
+#'   clamp means the margin is effectively Poisson, an upper one means it is
+#'   degenerately over-dispersed -- so this is retained on the fit rather than
+#'   only mentioned in the warning.
+#'
 #'   \code{lambda_bounds} is a named numeric vector \code{c(lower =, upper =)}
 #'   giving the admissible Famoye dependence interval, and \code{NULL} for
 #'   every other dependence structure. The bounds are computed once at the
@@ -318,6 +326,10 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     obj = if (keep == "full") obj else NULL,
     inference = inference,
     boundary_report = inference_result$boundary_report,
+    # Kept on the fit, not only in the warning: the two sides of a clamp call
+    # for opposite remedies, and a suppressed or long-since-scrolled-past
+    # warning must not be the only place that distinction survives.
+    boundary_sides = inference_result$boundary_sides,
     # Frozen at the starting values, not recomputed at the optimum, so a
     # Famoye lambda estimate can be pinned by a bound the data never implied.
     # Retained so that artefact is inspectable rather than invisible.

@@ -38,15 +38,21 @@
     if ((hi - value) <= tol) return("upper")
     NA_character_
   }
-  # (b) HARD clamp actually activated.  pmin/pmax clamps are the *identity*
-  #     until they bite, so a log_m of 19.3 is untouched by a clamp at 20 and
-  #     flagging it would be a false positive.  Only genuine activation counts.
-  #     Equality passes through in both R and the template, so the test is
-  #     strict.
-  clamp_activated <- function(z, lo = -20, hi = 20) {
+  # (b) HARD clamp reached.  pmin/pmax clamps are the *identity* strictly
+  #     inside their range, so a log_m of 19.3 is untouched by a clamp at 20
+  #     and flagging it would be a false positive.
+  #
+  #     The comparison is non-strict, because exact equality is a kink, not an
+  #     interior point: at z = -20 the left derivative is 0 and the right is
+  #     exp(-20), so the delta method has no unique derivative there.  The
+  #     template's CondExp happens to select the pass-through branch, and
+  #     clamp_deriv() matches it so the R/C++ contract stays exact -- but which
+  #     branch CppAD differentiates is a mechanical detail, not a licence to
+  #     report the result as identified inference.
+  clamp_reached <- function(z, lo = -20, hi = 20) {
     if (!is.finite(z)) return("degenerate")
-    if (z < lo) return("lower")
-    if (z > hi) return("upper")
+    if (z <= lo) return("lower")
+    if (z >= hi) return("upper")
     NA_character_
   }
   # (c) The link's derivative has collapsed, so the delta-method standard error
@@ -65,8 +71,8 @@
   m2 <- clamp_exp(z_m2)
   d_m1 <- clamp_deriv(z_m1, m1)
   d_m2 <- clamp_deriv(z_m2, m2)
-  side_m1 <- flag(d_m1, clamp_activated(z_m1))
-  side_m2 <- flag(d_m2, clamp_activated(z_m2))
+  side_m1 <- flag(d_m1, clamp_reached(z_m1))
+  side_m2 <- flag(d_m2, clamp_reached(z_m2))
   out <- list(
     m1 = add(m1, "log_m1", d_m1, !is.na(side_m1), side_m1),
     m2 = add(m2, "log_m2", d_m2, !is.na(side_m2), side_m2)
@@ -127,7 +133,7 @@
     # identity inside (-20, 20), so proximity to it means nothing.
     theta <- clamp_exp(z)
     dtheta <- clamp_deriv(z, theta)
-    theta_side <- flag(dtheta, clamp_activated(z))
+    theta_side <- flag(dtheta, clamp_reached(z))
     out$theta <- add(
       theta, "z_dep", dtheta, !is.na(theta_side), theta_side
     )
