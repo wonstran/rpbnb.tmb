@@ -96,18 +96,10 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   draws <- as.integer(draws)
 
   # Resolve dependence
-  if (inherits(dependence, "rpbnb_copula")) {
-    if (isTRUE(poisson_1) || isTRUE(poisson_2)) {
-      stop("Poisson-limit margins not supported with copula dependence.")
-    }
-    family_code <- switch(dependence$family,
-      frank = 1L, normal = 2L, kimeldorf = 3L)
-  } else if (identical(dependence, "famoye")) {
-    family_code <- 0L
-  } else if (identical(dependence, "independence")) {
-    family_code <- -1L
-  } else {
-    stop("`dependence` must be \"famoye\", \"independence\", or copula().")
+  family_code <- .resolve_family_code(dependence)
+  # Codes 1-3 are exactly the copula families.
+  if (family_code >= 1L && (isTRUE(poisson_1) || isTRUE(poisson_2))) {
+    stop("Poisson-limit margins not supported with copula dependence.")
   }
 
   # Prepare data

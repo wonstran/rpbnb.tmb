@@ -129,3 +129,13 @@ test_that("diagonal inference warns before marginal-effect standard errors", {
   expect_false(visible$visible)
   expect_true(all(is.na(visible$value$`Std. Error`)))
 })
+
+test_that("dependence specifications resolve to one shared family code", {
+  expect_identical(.resolve_family_code("independence"), -1L)
+  expect_identical(.resolve_family_code("famoye"), 0L)
+  expect_identical(.resolve_family_code(copula("frank")), 1L)
+  expect_identical(.resolve_family_code(copula("normal")), 2L)
+  expect_identical(.resolve_family_code(copula("kimeldorf")), 3L)
+  # "gaussian" is not a valid dependence string; only copula("normal") is.
+  expect_error(.resolve_family_code("gaussian"), "must be")
+})
