@@ -18,7 +18,7 @@ LinkingTo:
     TMB,
     RcppEigen
 Suggests:
-    testthat (>= 3.0.0),
+    testthat (>= 3.1.5),
     knitr,
     rmarkdown,
     pbivnorm,

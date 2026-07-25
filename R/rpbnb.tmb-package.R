@@ -5,8 +5,9 @@
 #' Famoye/Sarmanov and discrete-copula (Frank, Gaussian, Clayton) dependence.
 #'
 #' @keywords internal
-#' @importFrom stats AIC BIC coef dnbinom logLik nlminb pnbinom pnorm predict
-#' @importFrom stats qnbinom qnorm rnbinom rnorm runif symnum vcov
+#' @importFrom stats AIC BIC coef confint dnbinom logLik nlminb pnbinom pnorm
+#' @importFrom stats predict qnbinom qnorm rnbinom rnorm runif setNames symnum
+#' @importFrom stats vcov
 #' @importFrom numDeriv jacobian
 #' @importFrom TMB MakeADFun
 #' @useDynLib rpbnb.tmb, .registration = TRUE

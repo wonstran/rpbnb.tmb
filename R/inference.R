@@ -1,3 +1,216 @@
+#' Monotone links from the working dependence parameter to natural scale
+#'
+#' Every family's link is monotone increasing in \code{z}, which is what makes
+#' it legitimate to map the endpoints of a working-scale interval through it.
+#' \code{.rpbnb_natural_report()} and \code{rpbnb_tmb_dependence_profile()} both
+#' read their values from here so the two cannot disagree.
+#'
+#' \code{map} takes a scalar: \code{.frank_tau()} is not vectorized.
+#' @keywords internal
+#' @noRd
+.rpbnb_dependence_link <- function(family_code,
+                                   lamLo = NA_real_, lamHi = NA_real_) {
+  if (family_code < 0L) return(NULL)
+  if (family_code == 0L) {
+    eps <- 1e-6
+    span <- lamHi - lamLo
+    return(list(
+      names = "lam",
+      map = function(z) {
+        stopifnot(length(z) == 1L)
+        c(lam = lamLo + span * (eps + (1 - 2 * eps) * stats::plogis(z)))
+      }
+    ))
+  }
+  if (family_code == 1L) {
+    return(list(
+      names = c("theta", "tau"),
+      map = function(z) {
+        stopifnot(length(z) == 1L)
+        theta <- FRANK_THETA_MAX * tanh(z / FRANK_THETA_MAX)
+        c(theta = theta, tau = .frank_tau(theta))
+      }
+    ))
+  }
+  if (family_code == 2L) {
+    return(list(
+      names = c("rho", "tau"),
+      map = function(z) {
+        stopifnot(length(z) == 1L)
+        rho <- tanh(z)
+        c(rho = rho, tau = 2 / pi * asin(rho))
+      }
+    ))
+  }
+  list(
+    names = c("theta", "tau"),
+    map = function(z) {
+      stopifnot(length(z) == 1L)
+      theta <- exp(pmin(pmax(z, -20), 20))
+      c(theta = theta, tau = theta / (theta + 2))
+    }
+  )
+}
+
+#' Profile-likelihood interval for the working dependence parameter
+#'
+#' Returns working-scale endpoints, or \code{NULL} when no profile can be
+#' attempted or was attempted and failed, so the caller can fall back to a
+#' Wald interval. When \code{.reason} is supplied, it is populated (as a side
+#' effect, since \code{NULL} itself cannot carry attributes) with \code{$tag}
+#' -- one of \code{"no_objective"}, \code{"probe_failed"}, or
+#' \code{"tmbprofile_error"} -- and, when known, \code{$message} describing
+#' what actually went wrong, so the caller's warning can name the real cause
+#' instead of guessing.
+#' @keywords internal
+#' @noRd
+.dependence_profile_ci <- function(fit, level, ...,
+                                    .reason = new.env(parent = emptyenv())) {
+  set_reason <- function(tag, message = NULL) {
+    .reason$tag <- tag
+    .reason$message <- message
+    invisible(NULL)
+  }
+
+  dots <- list(...)
+
+  # `lincomb` and `slice` are real, documented tmbprofile() arguments, but
+  # unlike `trace` there is no way to forward them and keep this function's
+  # contract, so silently dropping them (as `obj`/`name` are below) would
+  # produce a plausible-looking wrong answer instead of an error.
+  #   - `lincomb`: when supplied, tmbprofile() profiles that linear
+  #     combination of parameters and `name` merely labels the output, so the
+  #     endpoints returned would not be z_dep at all -- yet the caller would
+  #     still map them through the dependence link as if they were.
+  #   - `slice = TRUE`: tmbprofile() then returns a likelihood *slice*, not a
+  #     profile, and confint() on a slice is not a likelihood-ratio interval,
+  #     even though `method` would still report "profile".
+  if ("lincomb" %in% names(dots)) {
+    stop(
+      "`lincomb` is not supported here: supplying it makes tmbprofile() ",
+      "profile a different linear combination of parameters, not z_dep, so ",
+      "the endpoints would be silently mapped through the dependence link ",
+      "as if they were z_dep. Omit `lincomb`.",
+      call. = FALSE
+    )
+  }
+  if ("slice" %in% names(dots)) {
+    stop(
+      "`slice` is not supported here: TMB::tmbprofile(slice = TRUE) returns ",
+      "a likelihood slice rather than a profile, and confint() on a slice ",
+      "is not a likelihood-ratio interval even though the result would still ",
+      "be reported as method = \"profile\". Omit `slice`.",
+      call. = FALSE
+    )
+  }
+
+  obj <- fit$obj
+  if (is.null(obj)) {
+    set_reason("no_objective", "fit$obj is NULL (not retained by the fit).")
+    return(NULL)
+  }
+
+  # `obj` is fit$obj's environment, not a copy of it, so the last.par.best
+  # write below is visible to the caller's fit too. Capture the pre-call
+  # value now, before the liveness probe below gets any chance to touch it --
+  # TMB's obj$fn() writes last.par.best when it improves on value.best -- and
+  # restore it on every exit path, mirroring how TMB::tmbprofile() protects
+  # its own obj$env writes via on.exit(restore.oldvars()). Nothing re-reads
+  # fit$obj after this call today, but leaving the mutation in place would be
+  # an unenforced invariant, not a guarantee.
+  old_last_par_best <- obj$env$last.par.best
+  on.exit(obj$env$last.par.best <- old_last_par_best, add = TRUE)
+
+  # Presence is not liveness, so evaluate rather than assume. Note this does
+  # NOT reject a saveRDS() round-trip: the reloaded ADFun pointer is nil, but
+  # TMB retapes from the data it kept in obj$env and returns a bit-identical
+  # objective value, so the probe passes and profiling is genuinely valid.
+  probe <- try(obj$fn(fit$optimizer$par), silent = TRUE)
+  if (inherits(probe, "try-error")) {
+    set_reason("probe_failed", conditionMessage(attr(probe, "condition")))
+    return(NULL)
+  }
+  if (length(probe) != 1L || !is.finite(probe)) {
+    set_reason(
+      "probe_failed",
+      "the objective did not return a single finite value at the fitted parameters"
+    )
+    return(NULL)
+  }
+
+  # tmbprofile() profiles from last.par.best, not obj$par. Restore it rather
+  # than trusting whatever last touched the objective.
+  obj$env$last.par.best <- fit$optimizer$par
+
+  # `trace` is a real, documented tmbprofile() argument and this function's
+  # own docs promise `...` is forwarded to it. Building `args` as
+  # c(list(obj, "z_dep", trace = FALSE), dots, extra) let a caller-supplied
+  # `trace` collide with the hardcoded one: do.call() then threw "formal
+  # argument matched by multiple actual arguments", which the try() below
+  # swallowed into a silent NULL -- downgrading a legitimate request to a
+  # Wald interval with no diagnostic. Resolve `trace` once and drop it from
+  # `dots` so no duplicate can ever reach do.call().
+  if ("trace" %in% names(dots)) {
+    trace <- dots[["trace"]]
+    dots[["trace"]] <- NULL
+  } else {
+    trace <- FALSE
+  }
+
+  # `obj` and `"z_dep"` are likewise hardcoded (positionally, into
+  # tmbprofile()'s `obj` and `name` formals) and not meant to be overridden --
+  # this function's entire contract is profiling *this* objective at
+  # *z_dep*. A caller-supplied `name` or `obj` in `...` would hit the same
+  # duplicate-argument crash as `trace`; drop them so our fixed values always
+  # win instead of erroring.
+  dots[["obj"]] <- NULL
+  dots[["name"]] <- NULL
+
+  run <- function(extra) {
+    args <- c(list(obj, "z_dep", trace = trace), dots, extra)
+    try(do.call(TMB::tmbprofile, args), silent = TRUE)
+  }
+
+  # tmbprofile()'s default ytol (2), and the maxit = ceiling(5 * ytol / ystep)
+  # that scales with it, often can't trace far enough for confint() to
+  # bracket a high `level`: confint.tmbprofile() needs the profile traced to
+  # a rise of 0.5 * qchisq(level, 1) -- 3.3174 at level = 0.99 -- past what
+  # ytol = 2 reaches. Deriving ytol from level up front (when the caller
+  # hasn't pinned one) lets a high-level request trace far enough on its
+  # first attempt, instead of always paying for this base call and then the
+  # 5x-maxit retry below.
+  first_extra <- NULL
+  if (!("ytol" %in% names(dots))) {
+    first_extra <- list(ytol = max(2, stats::qchisq(level, 1) / 2 + 0.5))
+  }
+
+  profile <- run(first_extra)
+  if (inherits(profile, "try-error")) {
+    set_reason(
+      "tmbprofile_error", conditionMessage(attr(profile, "condition"))
+    )
+    return(NULL)
+  }
+  endpoints <- as.numeric(stats::confint(profile, level = level))
+
+  # confint.tmbprofile() locates endpoints with approx(), so an uncrossed
+  # profile yields NA rather than an infinite bound. Widening ytol further
+  # searches before giving up -- a safety net for cases the level-derived
+  # ytol above still doesn't reach (e.g. a tight caller-supplied parm.range).
+  if (anyNA(endpoints) && !("ytol" %in% names(dots))) {
+    wider <- run(list(ytol = 10))
+    if (!inherits(wider, "try-error")) {
+      wider_endpoints <- as.numeric(stats::confint(wider, level = level))
+      if (sum(is.na(wider_endpoints)) < sum(is.na(endpoints))) {
+        profile <- wider
+        endpoints <- wider_endpoints
+      }
+    }
+  }
+
+  structure(endpoints, profile = profile)
+}
+
 #' Natural-scale report values and one-parameter derivatives
 #' @keywords internal
 #' @noRd
@@ -80,11 +293,14 @@
 
   if (family_code < 0L) return(out)
   z <- unname(coef["z_dep"])
+  link_values <- .rpbnb_dependence_link(
+    family_code, lamLo = lamLo, lamHi = lamHi
+  )$map(z)
   if (family_code == 0L) {
     eps <- 1e-6
     sig <- stats::plogis(z)
     span <- lamHi - lamLo
-    value <- lamLo + span * (eps + (1 - 2 * eps) * sig)
+    value <- link_values[["lam"]]
     derivative <- span * (1 - 2 * eps) * sig * (1 - sig)
     # Frozen at the starting values, so the interval itself is the artefact,
     # and the logistic compresses lam well before it reaches either end.
@@ -93,14 +309,14 @@
   } else if (family_code == 1L) {
     # |theta| < FRANK_THETA_MAX is an overflow guard, not a property of the
     # Frank family, whose theta is unbounded.
-    theta <- FRANK_THETA_MAX * tanh(z / FRANK_THETA_MAX)
+    theta <- link_values[["theta"]]
     derivative <- 1 - tanh(z / FRANK_THETA_MAX)^2
     side <- flag(
       derivative,
       near_smooth_cap(theta, -FRANK_THETA_MAX, FRANK_THETA_MAX)
     )
     out$theta <- add(theta, "z_dep", derivative, !is.na(side), side)
-    tau <- .frank_tau(theta)
+    tau <- link_values[["tau"]]
     tau_derivative <- if (derivative == 0) {
       0
     } else {
@@ -116,11 +332,11 @@
   } else if (family_code == 2L) {
     # |rho| < 1 is the model's own domain, so there is no artificial cap here:
     # only genuine saturation of tanh disqualifies the standard error.
-    rho <- tanh(z)
+    rho <- link_values[["rho"]]
     drho <- 1 - rho^2
     rho_side <- flag(drho)
     out$rho <- add(rho, "z_dep", drho, !is.na(rho_side), rho_side)
-    tau <- 2 / pi * asin(rho)
+    tau <- link_values[["tau"]]
     # 2/pi * drho / sqrt(1 - rho^2) is 0/0 once tanh saturates; the limit of
     # dtau/dz is 0 there, and leaving NaN would poison the report covariance.
     tau_derivative <- if (drho <= 0) 0 else 2 / pi * drho / sqrt(1 - rho^2)
@@ -131,13 +347,13 @@
   } else if (family_code == 3L) {
     # exp() clamped at +/-20 in both R and the template.  The clamp is the
     # identity inside (-20, 20), so proximity to it means nothing.
-    theta <- clamp_exp(z)
+    theta <- link_values[["theta"]]
     dtheta <- clamp_deriv(z, theta)
     theta_side <- flag(dtheta, clamp_reached(z))
     out$theta <- add(
       theta, "z_dep", dtheta, !is.na(theta_side), theta_side
     )
-    tau <- theta / (theta + 2)
+    tau <- link_values[["tau"]]
     tau_derivative <- 2 * dtheta / (theta + 2)^2
     tau_side <- if (out$theta$boundary) out$theta$side else flag(tau_derivative)
     out$tau <- add(
@@ -200,7 +416,7 @@
   if (length(dependence)) {
     cause <- switch(
       as.character(family_code),
-      "0" = "the Famoye bounds frozen at the starting values",
+      "0" = "the Famoye bounds, which are frozen at the starting values",
       "1" = sprintf(
         "the Frank overflow guard (|theta| < %g)", FRANK_THETA_MAX
       ),
@@ -208,13 +424,32 @@
       "3" = "the Clayton exp() clamp",
       "an implementation bound"
     )
+    # The profile note has to branch with `cause`, not trail it: only Famoye's
+    # bounds are precomputed and frozen, so only there is the profile confined
+    # to the same stale box.  Frank's overflow guard, the Gaussian saturation
+    # point and the Clayton clamp are live numerical limits of the family's own
+    # representable range, and an estimate against one of those is not an
+    # artefact of where the optimizer started.
+    profile_note <- if (family_code == 0L) {
+      paste0(
+        "rpbnb_tmb_dependence_profile() reports a likelihood-based interval ",
+        "in place of the NA, but for Famoye that interval is mapped through ",
+        "this same frozen box, so widen the box first rather than reading it ",
+        "as a rescue."
+      )
+    } else {
+      paste0(
+        "rpbnb_tmb_dependence_profile() reports a likelihood-based interval ",
+        "in place of the NA."
+      )
+    }
     warning(
       "Dependence estimate(s) ", paste(dependence, collapse = ", "),
       " are pinned at a boundary of ", cause,
       ". The estimates are constrained by the implementation rather than ",
       "identified by the data, so their standard errors are reported as NA. ",
       "Refit from different starting values, or use a dependence family whose ",
-      "range covers the association in these data.",
+      "range covers the association in these data. ", profile_note,
       call. = FALSE
     )
   }
@@ -389,4 +624,173 @@ summary.rpbnb_sdreport <- function(object,
   if (select == "fixed") return(fixed)
   if (select == "report") return(report)
   rbind(fixed, report)
+}
+
+#' Confidence interval for a fitted dependence parameter
+#'
+#' Returns a profile-likelihood interval for the dependence parameter of a
+#' fitted model, computed on the unconstrained working scale and mapped through
+#' the family's monotone link. This is the tool to reach for when
+#' \code{summary()} reports \code{NA} for the dependence standard error: at a
+#' boundary the delta-method derivative collapses, so
+#' \eqn{SE = |d\theta/dz| \cdot SE(z)} is a \eqn{0 \times \infty} product and no
+#' symmetric standard error exists. A profile interval needs no derivative.
+#'
+#' For Famoye this is the usual situation, because the admissible lambda
+#' interval is frozen at the starting values (see \code{lambda_bounds} in
+#' \code{\link{fit_rpbnb_tmb}}). An interval around a pinned estimate is still
+#' an interval around an artefact -- widen the box first by refitting from
+#' better starting values.
+#'
+#' @param fit An object of class \code{rpbnb_tmb_fit}.
+#' @param level Coverage level; one number strictly between 0 and 1.
+#' @param method \code{"profile"} (default) for a profile-likelihood interval,
+#'   or \code{"wald"} for a Wald interval on the working scale mapped through
+#'   the same link. \code{"profile"} requires the TMB objective, retained only
+#'   under \code{keep = "full"}; when it is unavailable this degrades to
+#'   \code{"wald"} with a warning rather than failing.
+#' @param ... Passed to \code{\link[TMB]{tmbprofile}}, e.g. \code{ytol} or
+#'   \code{parm.range}. \code{lincomb} and \code{slice} are not supported and
+#'   raise an error: the first would profile a different quantity than
+#'   \code{z_dep} while still being reported as if it were, and the second
+#'   returns a likelihood slice rather than a profile.
+#' @return A data frame with one row per reported dependence quantity and
+#'   columns \code{parameter}, \code{estimate}, \code{lower}, \code{upper},
+#'   \code{level}, and \code{method} -- the method actually used, which may
+#'   differ from the one requested. The raw profile, when one was computed, is
+#'   attached as \code{attr(, "profile")} so it can be plotted.
+#' @seealso \code{\link{fit_rpbnb_tmb}}
+#' @export
+#' @examples
+#' \dontrun{
+#' fit <- fit_rpbnb_tmb(y1 ~ x, y2 ~ x, data = d,
+#'                      dependence = "famoye", keep = "full")
+#' rpbnb_tmb_dependence_profile(fit)
+#' plot(attr(rpbnb_tmb_dependence_profile(fit), "profile"))
+#' }
+rpbnb_tmb_dependence_profile <- function(fit, level = 0.95,
+                                        method = c("profile", "wald"), ...) {
+  if (!inherits(fit, "rpbnb_tmb_fit")) {
+    stop("`fit` must be an object of class \"rpbnb_tmb_fit\".", call. = FALSE)
+  }
+  if (length(level) != 1L || !is.numeric(level) || is.na(level) ||
+      level <= 0 || level >= 1) {
+    stop("`level` must be one number strictly between 0 and 1.", call. = FALSE)
+  }
+  method <- match.arg(method)
+
+  family_code <- .resolve_family_code(fit$dependence)
+  if (family_code < 0L) {
+    stop("An independence fit estimates no dependence parameter, so there is ",
+         "nothing to profile.", call. = FALSE)
+  }
+
+  bounds <- fit$lambda_bounds
+  link <- .rpbnb_dependence_link(
+    family_code,
+    lamLo = if (is.null(bounds)) NA_real_ else bounds[["lower"]],
+    lamHi = if (is.null(bounds)) NA_real_ else bounds[["upper"]]
+  )
+  z_hat <- unname(fit$coef[["z_dep"]])
+
+  profile <- NULL
+  endpoints <- NULL
+  if (identical(method, "profile")) {
+    reason <- new.env(parent = emptyenv())
+    endpoints <- .dependence_profile_ci(fit, level = level, ..., .reason = reason)
+    if (is.null(endpoints)) {
+      # The three reasons .dependence_profile_ci() can return NULL for need
+      # three different warnings: telling someone whose tmbprofile() call
+      # itself failed to "refit with keep = \"full\"" is both false (the
+      # objective was live -- the liveness probe had just passed) and
+      # unactionable, and it throws away the one thing that would actually
+      # help them, the real error text.
+      tag <- if (is.null(reason$tag)) "unknown" else reason$tag
+      detail <- reason$message
+      msg <- switch(
+        tag,
+        no_objective = paste0(
+          "The TMB objective is unavailable, so no profile can be computed; ",
+          "falling back to a Wald interval on the working scale. Refit with ",
+          "keep = \"full\" for a profile interval."
+        ),
+        probe_failed = paste0(
+          "The TMB objective is present but could not be evaluated at the ",
+          "fitted parameters (", detail, "), so no profile can be computed; ",
+          "falling back to a Wald interval on the working scale."
+        ),
+        tmbprofile_error = paste0(
+          "TMB::tmbprofile() failed (", detail, "), so no profile can be ",
+          "computed; falling back to a Wald interval on the working scale."
+        ),
+        paste0(
+          "No profile could be computed, for an unrecognized reason; ",
+          "falling back to a Wald interval on the working scale."
+        )
+      )
+      warning(msg, call. = FALSE)
+      method <- "wald"
+    } else {
+      profile <- attr(endpoints, "profile")
+      endpoints <- as.numeric(endpoints)
+    }
+  }
+  if (identical(method, "wald")) {
+    se_z <- unname(fit$se[["z_dep"]])
+    if (!is.finite(se_z)) {
+      warning(
+        "No standard error is available for z_dep, so the interval endpoints ",
+        "are NA. Refit with inference = \"full\" or \"diag\".",
+        call. = FALSE
+      )
+      endpoints <- c(NA_real_, NA_real_)
+    } else {
+      half <- stats::qnorm(1 - (1 - level) / 2) * se_z
+      endpoints <- c(z_hat - half, z_hat + half)
+    }
+  }
+
+  # Every link is monotone increasing, so the lower working endpoint maps to the
+  # lower natural endpoint.
+  map_or_na <- function(z) {
+    if (!is.finite(z)) {
+      stats::setNames(rep(NA_real_, length(link$names)), link$names)
+    } else {
+      link$map(z)
+    }
+  }
+  estimate <- map_or_na(z_hat)
+  lower <- map_or_na(endpoints[1])
+  upper <- map_or_na(endpoints[2])
+
+  out <- data.frame(
+    parameter = link$names,
+    estimate  = unname(estimate[link$names]),
+    lower     = unname(lower[link$names]),
+    upper     = unname(upper[link$names]),
+    level     = level,
+    method    = method,
+    stringsAsFactors = FALSE
+  )
+
+  # Only for the profile path: the Wald path already warned about its own NAs.
+  if (identical(method, "profile")) {
+    if (anyNA(out$lower)) {
+      warning("The profile did not cross the cutoff within the traced range ",
+              "on the lower side, so the lower endpoint is NA; this may mean ",
+              "the likelihood is flat there, or simply that the profile was ",
+              "not traced far enough (see the `ytol` and `parm.range` ",
+              "arguments to tmbprofile()).", call. = FALSE)
+    }
+    if (anyNA(out$upper)) {
+      warning("The profile did not cross the cutoff within the traced range ",
+              "on the upper side, so the upper endpoint is NA; this may mean ",
+              "the likelihood is flat there, or simply that the profile was ",
+              "not traced far enough (see the `ytol` and `parm.range` ",
+              "arguments to tmbprofile()).", call. = FALSE)
+    }
+  }
+
+  attr(out, "profile") <- profile
+  out
 }

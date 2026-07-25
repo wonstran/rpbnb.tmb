@@ -136,9 +136,9 @@ Wald should run, `c(NA, NA)` means it ran and did not bracket.
 
 1. Return `NULL` if `fit$obj` is `NULL`.
 2. Probe liveness: `try(fit$obj$fn(fit$optimizer$par), silent = TRUE)`, and
-   require a finite scalar result. A fit round-tripped through `saveRDS()` keeps
-   the `obj` field but loses the external pointer, so presence is not liveness.
-   Return `NULL` on error or non-finite result.
+   require a finite scalar result. Return `NULL` on error or non-finite result.
+   (See the corrected note below on what this does and does not catch — a
+   `saveRDS()` round-trip is **not** one of the cases it rejects.)
 3. Restore the optimum: `fit$obj$env$last.par.best <- fit$optimizer$par`.
 4. `pr <- TMB::tmbprofile(fit$obj, "z_dep", trace = FALSE, ...)`.
 5. `ci <- confint(pr, level = level)`.
@@ -147,12 +147,36 @@ Wald should run, `c(NA, NA)` means it ran and did not bracket.
    `NA` — keep the `NA`.
 7. Attach `pr` as an attribute and return.
 
-**Known limitation.** Step 2 assumes TMB raises an R-level error on a stale
-`ADFun` pointer rather than crashing the session. That is TMB's normal
-behaviour, but it is not a guarantee this design can enforce, and there is no
-portable way to inspect the pointer's validity without calling into it. The
-documented remedy for a reloaded fit is to refit rather than to rely on the
-probe. Test 5 exists to detect a regression here early.
+**Corrected during implementation: reloaded fits still profile.** This section
+originally claimed that a fit round-tripped through `saveRDS()` loses its
+external pointer and must therefore degrade to a Wald interval. That was
+verified false on TMB 1.9.21:
+
+- `reloaded$obj$env$ADFun` prints `$ptr <pointer: (nil)>` — the pointer really
+  is dead.
+- `reloaded$obj$fn(reloaded$optimizer$par)` nevertheless returns a value
+  bit-identical to the pre-save one (`366.8121741` in the diagnostic run).
+
+TMB detects the nil pointer and retapes from the data and parameters it keeps in
+`obj$env`, so the objective is fully usable and the resulting profile is
+correct. The bit-identical value rules out a dangling-pointer read of freed
+memory. Retaping requires the package's compiled DLL to be loaded in the
+session, which always holds when the package is in use.
+
+The probe in step 2 is therefore still correct and worth keeping — it rejects an
+objective that genuinely cannot be evaluated — but a `saveRDS()` round-trip is
+not such a case, and forcing Wald there would discard a valid profile interval
+for no benefit. Test 5 asserts the profile path succeeds after a round-trip; the
+Wald fallback is covered instead by the `keep = "postfit"` test, where `fit$obj`
+is genuinely `NULL`.
+
+**Residual caution.** The retaping behaviour above is observed on TMB 1.9.21,
+not a contract TMB documents as stable. If a future TMB stops retaping, test 5
+fails loudly rather than silently returning a wrong interval, which is the
+failure mode to prefer. The separate assumption that TMB raises an R-level error
+rather than crashing on an unusable pointer remains unenforceable by this design,
+since there is no portable way to inspect pointer validity without calling into
+it.
 
 ### `rpbnb_tmb_dependence_profile()` — new, in `inference.R`
 
@@ -193,8 +217,11 @@ memory contract is unaffected because no fit here approaches `max_workload`.
 3. **Nesting in `level`.** The `0.99` interval contains the `0.95` interval.
 4. **Wald fallback warns and works.** A `keep = "postfit"` fit warns and returns
    a finite interval with `method == "wald"`.
-5. **Stale pointer falls back.** A fit round-tripped through
-   `saveRDS()`/`readRDS()` degrades to Wald rather than erroring.
+5. **Reloaded fits still profile.** A fit round-tripped through
+   `saveRDS()`/`readRDS()` returns `method == "profile"` with no warning,
+   because TMB retapes from the data it keeps in `obj$env`. (Originally
+   specified as a Wald degradation; corrected during implementation — see
+   "Corrected during implementation" above.)
 6. **Independence errors.**
 7. **Frank returns both rows.** `parameter` is exactly `c("theta", "tau")`, in
    that order.

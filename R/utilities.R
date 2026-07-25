@@ -308,6 +308,25 @@ lambda_bounds_vec <- function(c1, c2) {
   out
 }
 
+#' Map a dependence specification to its family code
+#'
+#' The single definition shared by the fitter and by
+#' \code{rpbnb_tmb_dependence_profile()}. Keeping one copy is the point: a
+#' second inline \code{switch} would silently disagree the moment a family is
+#' added.
+#' @keywords internal
+#' @noRd
+.resolve_family_code <- function(dependence) {
+  if (inherits(dependence, "rpbnb_copula")) {
+    return(switch(dependence$family,
+                  frank = 1L, normal = 2L, kimeldorf = 3L))
+  }
+  if (identical(dependence, "famoye")) return(0L)
+  if (identical(dependence, "independence")) return(-1L)
+  stop("`dependence` must be \"famoye\", \"independence\", or copula().",
+       call. = FALSE)
+}
+
 #' Specify a copula dependence model
 #'
 #' Creates a copula specification for \code{fit_rpbnb_tmb()} or

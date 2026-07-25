@@ -52,6 +52,11 @@
 #'   recomputed at the optimum. A \code{lam} estimate at either end is
 #'   therefore an artefact of the starting values rather than a property of the
 #'   data, which is why the field is exposed.
+#'   \code{\link{rpbnb_tmb_dependence_profile}} reports a likelihood-based
+#'   interval where the delta-method standard error collapses to \code{NA}, but
+#'   for Famoye that interval is mapped through this same frozen box and so
+#'   cannot escape it: widen the box by refitting from better starting values
+#'   before treating such an interval as informative.
 #' @export
 #' @examples
 #' \dontrun{
@@ -96,18 +101,10 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   draws <- as.integer(draws)
 
   # Resolve dependence
-  if (inherits(dependence, "rpbnb_copula")) {
-    if (isTRUE(poisson_1) || isTRUE(poisson_2)) {
-      stop("Poisson-limit margins not supported with copula dependence.")
-    }
-    family_code <- switch(dependence$family,
-      frank = 1L, normal = 2L, kimeldorf = 3L)
-  } else if (identical(dependence, "famoye")) {
-    family_code <- 0L
-  } else if (identical(dependence, "independence")) {
-    family_code <- -1L
-  } else {
-    stop("`dependence` must be \"famoye\", \"independence\", or copula().")
+  family_code <- .resolve_family_code(dependence)
+  # Codes 1-3 are exactly the copula families.
+  if (family_code >= 1L && (isTRUE(poisson_1) || isTRUE(poisson_2))) {
+    stop("Poisson-limit margins not supported with copula dependence.")
   }
 
   # Prepare data
