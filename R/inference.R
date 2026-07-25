@@ -532,3 +532,140 @@ summary.rpbnb_sdreport <- function(object,
   if (select == "report") return(report)
   rbind(fixed, report)
 }
+
+#' Confidence interval for a fitted dependence parameter
+#'
+#' Returns a profile-likelihood interval for the dependence parameter of a
+#' fitted model, computed on the unconstrained working scale and mapped through
+#' the family's monotone link. This is the tool to reach for when
+#' \code{summary()} reports \code{NA} for the dependence standard error: at a
+#' boundary the delta-method derivative collapses, so
+#' \eqn{SE = |d\theta/dz| \cdot SE(z)} is a \eqn{0 \times \infty} product and no
+#' symmetric standard error exists. A profile interval needs no derivative.
+#'
+#' For Famoye this is the usual situation, because the admissible lambda
+#' interval is frozen at the starting values (see \code{lambda_bounds} in
+#' \code{\link{fit_rpbnb_tmb}}). An interval around a pinned estimate is still
+#' an interval around an artefact -- widen the box first by refitting from
+#' better starting values.
+#'
+#' @param fit An object of class \code{rpbnb_tmb_fit}.
+#' @param level Coverage level; one number strictly between 0 and 1.
+#' @param method \code{"profile"} (default) for a profile-likelihood interval,
+#'   or \code{"wald"} for a Wald interval on the working scale mapped through
+#'   the same link. \code{"profile"} requires the TMB objective, retained only
+#'   under \code{keep = "full"}; when it is unavailable this degrades to
+#'   \code{"wald"} with a warning rather than failing.
+#' @param ... Passed to \code{\link[TMB]{tmbprofile}}, e.g. \code{ytol} or
+#'   \code{parm.range}.
+#' @return A data frame with one row per reported dependence quantity and
+#'   columns \code{parameter}, \code{estimate}, \code{lower}, \code{upper},
+#'   \code{level}, and \code{method} -- the method actually used, which may
+#'   differ from the one requested. The raw profile, when one was computed, is
+#'   attached as \code{attr(, "profile")} so it can be plotted.
+#' @seealso \code{\link{fit_rpbnb_tmb}}
+#' @export
+#' @examples
+#' \dontrun{
+#' fit <- fit_rpbnb_tmb(y1 ~ x, y2 ~ x, data = d,
+#'                      dependence = "famoye", keep = "full")
+#' rpbnb_tmb_dependence_profile(fit)
+#' plot(attr(rpbnb_tmb_dependence_profile(fit), "profile"))
+#' }
+rpbnb_tmb_dependence_profile <- function(fit, level = 0.95,
+                                        method = c("profile", "wald"), ...) {
+  if (!inherits(fit, "rpbnb_tmb_fit")) {
+    stop("`fit` must be an object of class \"rpbnb_tmb_fit\".", call. = FALSE)
+  }
+  if (length(level) != 1L || !is.numeric(level) || is.na(level) ||
+      level <= 0 || level >= 1) {
+    stop("`level` must be one number strictly between 0 and 1.", call. = FALSE)
+  }
+  method <- match.arg(method)
+
+  family_code <- .resolve_family_code(fit$dependence)
+  if (family_code < 0L) {
+    stop("An independence fit estimates no dependence parameter, so there is ",
+         "nothing to profile.", call. = FALSE)
+  }
+
+  bounds <- fit$lambda_bounds
+  link <- .rpbnb_dependence_link(
+    family_code,
+    lamLo = if (is.null(bounds)) NA_real_ else bounds[["lower"]],
+    lamHi = if (is.null(bounds)) NA_real_ else bounds[["upper"]]
+  )
+  z_hat <- unname(fit$coef[["z_dep"]])
+
+  profile <- NULL
+  endpoints <- NULL
+  if (identical(method, "profile")) {
+    endpoints <- .dependence_profile_ci(fit, level = level, ...)
+    if (is.null(endpoints)) {
+      warning(
+        "The TMB objective is unavailable, so no profile can be computed; ",
+        "falling back to a Wald interval on the working scale. Refit with ",
+        "keep = \"full\" for a profile interval.",
+        call. = FALSE
+      )
+      method <- "wald"
+    } else {
+      profile <- attr(endpoints, "profile")
+      endpoints <- as.numeric(endpoints)
+    }
+  }
+  if (identical(method, "wald")) {
+    se_z <- unname(fit$se[["z_dep"]])
+    if (!is.finite(se_z)) {
+      warning(
+        "No standard error is available for z_dep, so the interval endpoints ",
+        "are NA. Refit with inference = \"full\" or \"diag\".",
+        call. = FALSE
+      )
+      endpoints <- c(NA_real_, NA_real_)
+    } else {
+      half <- stats::qnorm(1 - (1 - level) / 2) * se_z
+      endpoints <- c(z_hat - half, z_hat + half)
+    }
+  }
+
+  # Every link is monotone increasing, so the lower working endpoint maps to the
+  # lower natural endpoint.
+  map_or_na <- function(z) {
+    if (!is.finite(z)) {
+      stats::setNames(rep(NA_real_, length(link$names)), link$names)
+    } else {
+      link$map(z)
+    }
+  }
+  estimate <- map_or_na(z_hat)
+  lower <- map_or_na(endpoints[1])
+  upper <- map_or_na(endpoints[2])
+
+  out <- data.frame(
+    parameter = link$names,
+    estimate  = unname(estimate[link$names]),
+    lower     = unname(lower[link$names]),
+    upper     = unname(upper[link$names]),
+    level     = level,
+    method    = method,
+    stringsAsFactors = FALSE
+  )
+
+  # Only for the profile path: the Wald path already warned about its own NAs.
+  if (identical(method, "profile")) {
+    if (anyNA(out$lower)) {
+      warning("The profile did not cross the cutoff on the lower side, so ",
+              "the lower endpoint is NA; the likelihood is flat in that ",
+              "direction.", call. = FALSE)
+    }
+    if (anyNA(out$upper)) {
+      warning("The profile did not cross the cutoff on the upper side, so ",
+              "the upper endpoint is NA; the likelihood is flat in that ",
+              "direction.", call. = FALSE)
+    }
+  }
+
+  attr(out, "profile") <- profile
+  out
+}
