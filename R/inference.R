@@ -1,3 +1,57 @@
+#' Monotone links from the working dependence parameter to natural scale
+#'
+#' Every family's link is monotone increasing in \code{z}, which is what makes
+#' it legitimate to map the endpoints of a working-scale interval through it.
+#' \code{.rpbnb_natural_report()} and \code{rpbnb_tmb_dependence_profile()} both
+#' read their values from here so the two cannot disagree.
+#'
+#' \code{map} takes a scalar: \code{.frank_tau()} is not vectorized.
+#' @keywords internal
+#' @noRd
+.rpbnb_dependence_link <- function(family_code,
+                                   lamLo = NA_real_, lamHi = NA_real_) {
+  if (family_code < 0L) return(NULL)
+  if (family_code == 0L) {
+    eps <- 1e-6
+    span <- lamHi - lamLo
+    return(list(
+      names = "lam",
+      map = function(z) {
+        stopifnot(length(z) == 1L)
+        c(lam = lamLo + span * (eps + (1 - 2 * eps) * stats::plogis(z)))
+      }
+    ))
+  }
+  if (family_code == 1L) {
+    return(list(
+      names = c("theta", "tau"),
+      map = function(z) {
+        stopifnot(length(z) == 1L)
+        theta <- FRANK_THETA_MAX * tanh(z / FRANK_THETA_MAX)
+        c(theta = theta, tau = .frank_tau(theta))
+      }
+    ))
+  }
+  if (family_code == 2L) {
+    return(list(
+      names = c("rho", "tau"),
+      map = function(z) {
+        stopifnot(length(z) == 1L)
+        rho <- tanh(z)
+        c(rho = rho, tau = 2 / pi * asin(rho))
+      }
+    ))
+  }
+  list(
+    names = c("theta", "tau"),
+    map = function(z) {
+      stopifnot(length(z) == 1L)
+      theta <- exp(pmin(pmax(z, -20), 20))
+      c(theta = theta, tau = theta / (theta + 2))
+    }
+  )
+}
+
 #' Natural-scale report values and one-parameter derivatives
 #' @keywords internal
 #' @noRd
@@ -80,11 +134,14 @@
 
   if (family_code < 0L) return(out)
   z <- unname(coef["z_dep"])
+  link_values <- .rpbnb_dependence_link(
+    family_code, lamLo = lamLo, lamHi = lamHi
+  )$map(z)
   if (family_code == 0L) {
     eps <- 1e-6
     sig <- stats::plogis(z)
     span <- lamHi - lamLo
-    value <- lamLo + span * (eps + (1 - 2 * eps) * sig)
+    value <- link_values[["lam"]]
     derivative <- span * (1 - 2 * eps) * sig * (1 - sig)
     # Frozen at the starting values, so the interval itself is the artefact,
     # and the logistic compresses lam well before it reaches either end.
@@ -93,14 +150,14 @@
   } else if (family_code == 1L) {
     # |theta| < FRANK_THETA_MAX is an overflow guard, not a property of the
     # Frank family, whose theta is unbounded.
-    theta <- FRANK_THETA_MAX * tanh(z / FRANK_THETA_MAX)
+    theta <- link_values[["theta"]]
     derivative <- 1 - tanh(z / FRANK_THETA_MAX)^2
     side <- flag(
       derivative,
       near_smooth_cap(theta, -FRANK_THETA_MAX, FRANK_THETA_MAX)
     )
     out$theta <- add(theta, "z_dep", derivative, !is.na(side), side)
-    tau <- .frank_tau(theta)
+    tau <- link_values[["tau"]]
     tau_derivative <- if (derivative == 0) {
       0
     } else {
@@ -116,11 +173,11 @@
   } else if (family_code == 2L) {
     # |rho| < 1 is the model's own domain, so there is no artificial cap here:
     # only genuine saturation of tanh disqualifies the standard error.
-    rho <- tanh(z)
+    rho <- link_values[["rho"]]
     drho <- 1 - rho^2
     rho_side <- flag(drho)
     out$rho <- add(rho, "z_dep", drho, !is.na(rho_side), rho_side)
-    tau <- 2 / pi * asin(rho)
+    tau <- link_values[["tau"]]
     # 2/pi * drho / sqrt(1 - rho^2) is 0/0 once tanh saturates; the limit of
     # dtau/dz is 0 there, and leaving NaN would poison the report covariance.
     tau_derivative <- if (drho <= 0) 0 else 2 / pi * drho / sqrt(1 - rho^2)
@@ -131,13 +188,13 @@
   } else if (family_code == 3L) {
     # exp() clamped at +/-20 in both R and the template.  The clamp is the
     # identity inside (-20, 20), so proximity to it means nothing.
-    theta <- clamp_exp(z)
+    theta <- link_values[["theta"]]
     dtheta <- clamp_deriv(z, theta)
     theta_side <- flag(dtheta, clamp_reached(z))
     out$theta <- add(
       theta, "z_dep", dtheta, !is.na(theta_side), theta_side
     )
-    tau <- theta / (theta + 2)
+    tau <- link_values[["tau"]]
     tau_derivative <- 2 * dtheta / (theta + 2)^2
     tau_side <- if (out$theta$boundary) out$theta$side else flag(tau_derivative)
     out$tau <- add(
