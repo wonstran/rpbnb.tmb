@@ -23,7 +23,10 @@ under \code{keep = "full"}; when it is unavailable this degrades to
 \code{"wald"} with a warning rather than failing.}
 
 \item{...}{Passed to \code{\link[TMB]{tmbprofile}}, e.g. \code{ytol} or
-\code{parm.range}.}
+\code{parm.range}. \code{lincomb} and \code{slice} are not supported and
+raise an error: the first would profile a different quantity than
+\code{z_dep} while still being reported as if it were, and the second
+returns a likelihood slice rather than a profile.}
 }
 \value{
 A data frame with one row per reported dependence quantity and

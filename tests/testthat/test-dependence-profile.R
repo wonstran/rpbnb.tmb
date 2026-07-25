@@ -33,11 +33,28 @@ dp_test_data <- function(n = 200L) {
   )
 }
 
+# Shared across most `.dependence_profile_ci()` / `rpbnb_tmb_dependence_profile()`
+# tests below: fitting `copula("normal")` on `dp_test_data()` with
+# `keep = "full"` is deterministic (dp_test_data() seeds internally) and was
+# previously repeated by seven separate tests -- refitting was the single
+# largest contributor to this file's runtime. `.dependence_profile_ci()`
+# restores every mutation it makes to `fit$obj$env$last.par.best` on exit
+# (see R/inference.R), so tests that only call it or
+# `rpbnb_tmb_dependence_profile()` and read the result can safely share this
+# one fit. The exception is the "last.par.best is restored" test below: it
+# deliberately plants a sentinel value in `fit$obj$env$last.par.best` *before*
+# calling `.dependence_profile_ci()` and asserts that the sentinel -- not
+# `fit$optimizer$par` -- is what comes back afterwards. Sharing that test's
+# fit would leave the sentinel sitting in the shared object's environment for
+# every test that runs after it, silently changing what "before" means for
+# any of them; that test keeps its own dedicated fit.
+dp_shared_fit <- fit_rpbnb_tmb(
+  y1 ~ x, y2 ~ x, dp_test_data(),
+  dependence = copula("normal"), draws = 1L, keep = "full"
+)
+
 test_that("the working-scale profile brackets the working estimate", {
-  fit <- fit_rpbnb_tmb(
-    y1 ~ x, y2 ~ x, dp_test_data(),
-    dependence = copula("normal"), draws = 1L, keep = "full"
-  )
+  fit <- dp_shared_fit
 
   ci <- .dependence_profile_ci(fit, level = 0.95)
 
@@ -60,10 +77,7 @@ test_that("a fit without the TMB objective yields NULL, not an error", {
 })
 
 test_that("a caller-supplied trace does not silently degrade the profile to NULL", {
-  fit <- fit_rpbnb_tmb(
-    y1 ~ x, y2 ~ x, dp_test_data(),
-    dependence = copula("normal"), draws = 1L, keep = "full"
-  )
+  fit <- dp_shared_fit
 
   # trace is a real, documented TMB::tmbprofile() argument, and this
   # function's own docs promise `...` is forwarded to it. Before the fix,
@@ -74,11 +88,14 @@ test_that("a caller-supplied trace does not silently degrade the profile to NULL
   # trace = TRUE makes tmbprofile() print a "Profile value: ..." line per
   # step; capture.output() swallows that progress spew without touching what
   # is actually being asserted (that a caller-supplied trace still profiles).
-  invisible(capture.output(
+  trace_output <- capture.output(
     ci_trace_true <- .dependence_profile_ci(fit, level = 0.95, trace = TRUE)
-  ))
+  )
   expect_false(is.null(ci_trace_true))
   expect_length(as.numeric(ci_trace_true), 2L)
+  # Proves trace = TRUE actually reached tmbprofile() and produced output,
+  # not just that the call didn't error.
+  expect_true(any(grepl("Profile value", trace_output)))
 
   ci_trace_false <- .dependence_profile_ci(fit, level = 0.95, trace = FALSE)
   expect_false(is.null(ci_trace_false))
@@ -109,10 +126,7 @@ test_that("the pre-call last.par.best is restored after profiling, even when it 
 })
 
 test_that("the profile interval brackets the estimate on the natural scale", {
-  fit <- fit_rpbnb_tmb(
-    y1 ~ x, y2 ~ x, dp_test_data(),
-    dependence = copula("normal"), draws = 1L, keep = "full"
-  )
+  fit <- dp_shared_fit
 
   pr <- rpbnb_tmb_dependence_profile(fit)
 
@@ -124,10 +138,7 @@ test_that("the profile interval brackets the estimate on the natural scale", {
 })
 
 test_that("a wider level nests the narrower one", {
-  fit <- fit_rpbnb_tmb(
-    y1 ~ x, y2 ~ x, dp_test_data(),
-    dependence = copula("normal"), draws = 1L, keep = "full"
-  )
+  fit <- dp_shared_fit
 
   narrow <- rpbnb_tmb_dependence_profile(fit, level = 0.95)
   wide   <- rpbnb_tmb_dependence_profile(fit, level = 0.99)
@@ -150,6 +161,11 @@ test_that("Famoye endpoints stay inside the frozen lambda bounds", {
   # and every finite endpoint must lie in the box.
   ends <- c(pr$lower, pr$upper)
   ends <- ends[is.finite(ends)]
+  # If the fit fully pins, this filter can yield a zero-length vector and
+  # all() over it is vacuously TRUE, which would let the two checks below
+  # pass without ever comparing anything. Guard against that so the test can
+  # actually fail.
+  expect_true(length(ends) > 0)
   expect_true(all(ends >= bounds[["lower"]]))
   expect_true(all(ends <= bounds[["upper"]]))
 })
@@ -171,10 +187,7 @@ test_that("a fit without the TMB objective warns and degrades to Wald", {
 })
 
 test_that("a reloaded fit still profiles because TMB retapes from stored data", {
-  fit <- fit_rpbnb_tmb(
-    y1 ~ x, y2 ~ x, dp_test_data(),
-    dependence = copula("normal"), draws = 1L, keep = "full"
-  )
+  fit <- dp_shared_fit
   path <- tempfile(fileext = ".rds")
   saveRDS(fit, path)
   reloaded <- readRDS(path)
@@ -205,15 +218,55 @@ test_that("independence has nothing to profile", {
 })
 
 test_that("level and fit are validated", {
-  fit <- fit_rpbnb_tmb(
-    y1 ~ x, y2 ~ x, dp_test_data(),
-    dependence = copula("normal"), draws = 1L, keep = "full"
-  )
+  fit <- dp_shared_fit
 
   expect_error(rpbnb_tmb_dependence_profile(fit, level = 1), "between 0 and 1")
   expect_error(rpbnb_tmb_dependence_profile(fit, level = c(0.9, 0.95)),
                "between 0 and 1")
   expect_error(rpbnb_tmb_dependence_profile(list()), "rpbnb_tmb_fit")
+})
+
+test_that("lincomb and slice in ... are rejected rather than silently ignored", {
+  # `.dependence_profile_ci()` checks `dots` for these before it ever touches
+  # `fit$obj`, so no model fit is needed to exercise the guard: a caller
+  # supplying `lincomb` would otherwise have tmbprofile() silently profile a
+  # different linear combination of parameters than z_dep, and `slice = TRUE`
+  # would silently swap a likelihood profile for a likelihood slice -- both
+  # produce a plausible-looking wrong answer with `method` still saying
+  # "profile", so they must error instead of being dropped like `obj`/`name`.
+  expect_error(
+    .dependence_profile_ci(list(), level = 0.95, lincomb = c(1, 0, 0)),
+    "lincomb"
+  )
+  expect_error(
+    .dependence_profile_ci(list(), level = 0.95, slice = TRUE),
+    "slice"
+  )
+})
+
+test_that("a liveness-probe failure warns with the real cause, not the keep = full advice", {
+  # Fix 1 regression: before the fix, every NULL from .dependence_profile_ci()
+  # -- whether fit$obj was NULL, the liveness probe failed, or tmbprofile()
+  # itself threw -- was reported with the same "refit with keep = \"full\""
+  # advice. That is only correct for the first case. Here the objective is
+  # present but broken, which .dependence_profile_ci() must distinguish and
+  # report as such, quoting the real underlying error.
+  fit <- dp_shared_fit
+  fit$obj <- list(
+    fn = function(par) stop("simulated objective failure"),
+    env = new.env()
+  )
+
+  expect_warning(
+    pr <- rpbnb_tmb_dependence_profile(fit),
+    "simulated objective failure"
+  )
+  expect_identical(unique(pr$method), "wald")
+  warning_text <- tryCatch(
+    { rpbnb_tmb_dependence_profile(fit); NA_character_ },
+    warning = function(w) conditionMessage(w)
+  )
+  expect_false(grepl("keep = \"full\"", warning_text, fixed = TRUE))
 })
 
 test_that('inference = "none" returns the estimate with NA endpoints', {
