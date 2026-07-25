@@ -352,16 +352,32 @@
       "3" = "the Clayton exp() clamp",
       "an implementation bound"
     )
+    # The profile note has to branch with `cause`, not trail it: only Famoye's
+    # bounds are precomputed and frozen, so only there is the profile confined
+    # to the same stale box.  Frank's overflow guard, the Gaussian saturation
+    # point and the Clayton clamp are live numerical limits of the family's own
+    # representable range, and an estimate against one of those is not an
+    # artefact of where the optimizer started.
+    profile_note <- if (family_code == 0L) {
+      paste0(
+        "rpbnb_tmb_dependence_profile() reports a likelihood-based interval ",
+        "in place of the NA, but for Famoye that interval is mapped through ",
+        "this same frozen box, so widen the box first rather than reading it ",
+        "as a rescue."
+      )
+    } else {
+      paste0(
+        "rpbnb_tmb_dependence_profile() reports a likelihood-based interval ",
+        "in place of the NA."
+      )
+    }
     warning(
       "Dependence estimate(s) ", paste(dependence, collapse = ", "),
       " are pinned at a boundary of ", cause,
       ". The estimates are constrained by the implementation rather than ",
       "identified by the data, so their standard errors are reported as NA. ",
       "Refit from different starting values, or use a dependence family whose ",
-      "range covers the association in these data. ",
-      "rpbnb_tmb_dependence_profile() reports a likelihood-based interval ",
-      "instead of the NA, but for Famoye it is still mapped through this same ",
-      "frozen box, so widen the box first rather than reading it as a rescue.",
+      "range covers the association in these data. ", profile_note,
       call. = FALSE
     )
   }
