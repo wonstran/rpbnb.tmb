@@ -6,6 +6,7 @@ test_that("Frank random-parameter fit has finite curvature from default start", 
   )
   d <- utils::read.csv(data_path)[1:120, ]
 
+  ctrl <- rpbnb_tmb_control(iterlim = 100, n_cores = 1)
   fit <- expect_no_warning(fit_rpbnb_tmb(
     docvis ~ age + hhninc + educ + female + married + kids,
     hospvis ~ age + educ + outwork + female + self,
@@ -15,7 +16,7 @@ test_that("Frank random-parameter fit has finite curvature from default start", 
     dependence = copula("frank"),
     draws = 20,
     seed = 20240712,
-    control = rpbnb_tmb_control(iterlim = 100, n_cores = 1)
+    control = ctrl
   ))
 
   expect_equal(fit$optimizer$convergence, 0)
