@@ -92,7 +92,13 @@ TAPE_CALIBRATION <- list(
     ". Frank is nearly three times Famoye, so treating it as unweighted would ",
     "under-budget it threefold.\n\n",
     "Raise \\code{max_workload} deliberately against the memory you actually ",
-    "have, not to make one particular dataset fit."
+    "have, not to make one particular dataset fit.\n\n",
+    "As of \\code{rpbnb_tmb_max_workload()}, the value \\code{rpbnb_tmb_control()} ",
+    "actually uses by default is no longer the fixed figure above: it will ",
+    "auto-detect available memory and budget 80% of it, falling back to the ",
+    "fixed 8 GiB figure only when detection is unavailable on the current ",
+    "platform. Call \\code{\\link{rpbnb_tmb_max_workload}} directly to set ",
+    "your own budget or detection fraction."
   )
 }
 
@@ -539,7 +545,7 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               n_cores = 1L,
                               max_threads = 4L,
                               max_workload =
-                                .calibration_default_workload(),
+                                rpbnb_tmb_max_workload(),
                               parallel_tape = FALSE,
                               halton_burn = 300L) {
   if (length(n_cores) != 1L || !is.numeric(n_cores) ||

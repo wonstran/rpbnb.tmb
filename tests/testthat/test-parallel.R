@@ -207,21 +207,29 @@ test_that("threads multiply the workload only under concurrent taping", {
   expect_equal(cost(n_threads = 8L, parallel_tape = TRUE), 8e5)
 })
 
-test_that("the default is derived from the calibration, not restated", {
-  # An earlier version of this test defined its own copies of the constants and
-  # checked their arithmetic, so editing the published numbers left it green.
-  # The contract that matters is that the shipped default IS the calibration's
-  # derived value -- there is only one copy of each number in the package.
+test_that("the control default calls through to rpbnb_tmb_max_workload()", {
+  # An earlier version of this test asserted the default equals the fixed
+  # calibration constant directly. That stopped being the general case once
+  # the default started auto-detecting memory; this test now asserts the
+  # actual current contract instead, on both paths that default can take.
+  testthat::local_mocked_bindings(
+    .detect_available_memory_gib = function() 10
+  )
   expect_identical(
     rpbnb_tmb_control()$max_workload,
-    .calibration_default_workload()
+    rpbnb_tmb_max_workload()
   )
-  expect_equal(
-    .calibration_default_workload() *
-      TAPE_CALIBRATION$peak_bytes_per_unit / 1024^3,
-    TAPE_CALIBRATION$budget_gib,
-    tolerance = 0.05
+})
+
+test_that("the control default falls back to the calibration constant when detection fails", {
+  testthat::local_mocked_bindings(
+    .detect_available_memory_gib = function() NA_real_
   )
+  expect_warning(
+    result <- rpbnb_tmb_control()$max_workload,
+    "Could not detect"
+  )
+  expect_identical(result, .calibration_default_workload())
 })
 
 test_that("the documentation is generated from the calibration", {
@@ -236,6 +244,8 @@ test_that("the documentation is generated from the calibration", {
                fixed = TRUE)
   expect_match(doc, format(.calibration_default_workload(),
                            scientific = FALSE, big.mark = ","), fixed = TRUE)
+  expect_match(doc, "rpbnb_tmb_max_workload", fixed = TRUE)
+  expect_match(doc, "auto-detect", fixed = TRUE)
   expect_match(doc, "frank 2.9", fixed = TRUE)
   # Every family the guard can be asked about must be a measured one.
   expect_setequal(
