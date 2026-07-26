@@ -214,6 +214,66 @@ TAPE_CALIBRATION <- list(
   value_kib / 1024^2
 }
 
+#' Compute a TMB workload budget from a memory figure
+#'
+#' Companion to \code{rpbnb_tmb_control()}'s \code{max_workload}: rather than
+#' picking a weighted-observation-draw count directly, state a memory budget
+#' and let this function do the arithmetic \code{TAPE_CALIBRATION} implies.
+#'
+#' With \code{budget_gib} omitted, this is also \code{rpbnb_tmb_control()}'s
+#' own default: every fit that doesn't set \code{max_workload} explicitly
+#' already goes through this function.
+#' @param budget_gib Optional memory budget in GiB, stated explicitly. When
+#'   supplied, used as-is -- \code{fraction} does not apply, because a number
+#'   you state yourself is not second-guessed with a discount. When omitted
+#'   (the default), available memory is auto-detected and \code{fraction} of
+#'   it is budgeted instead.
+#' @param fraction Of auto-detected available memory, the fraction to
+#'   actually budget; one number in \code{(0, 1]}. Available memory
+#'   fluctuates and competes with other processes, so budgeting all of it
+#'   risks the guard passing a fit that then exhausts memory anyway. Ignored
+#'   when \code{budget_gib} is supplied.
+#' @return One positive numeric workload value, on the same scale as
+#'   \code{rpbnb_tmb_control()}'s \code{max_workload}.
+#' @export
+#' @examples
+#' rpbnb_tmb_max_workload(budget_gib = 16)
+#' \dontrun{
+#' ctrl <- rpbnb_tmb_control(max_workload = rpbnb_tmb_max_workload())
+#' }
+rpbnb_tmb_max_workload <- function(budget_gib = NULL, fraction = 0.8) {
+  if (length(fraction) != 1L || !is.numeric(fraction) || is.na(fraction) ||
+      !is.finite(fraction) || fraction <= 0 || fraction > 1) {
+    stop("fraction must be one number in (0, 1].", call. = FALSE)
+  }
+
+  if (!is.null(budget_gib)) {
+    if (length(budget_gib) != 1L || !is.numeric(budget_gib) ||
+        is.na(budget_gib) || !is.finite(budget_gib) || budget_gib <= 0) {
+      stop("budget_gib must be one positive finite number, or NULL.",
+           call. = FALSE)
+    }
+    return(signif(
+      budget_gib * 1024^3 / TAPE_CALIBRATION$peak_bytes_per_unit, 1
+    ))
+  }
+
+  detected_gib <- .detect_available_memory_gib()
+  if (is.na(detected_gib)) {
+    warning(
+      "Could not detect available memory on this platform; using the ",
+      "default 8 GiB calibration budget. Pass `budget_gib` explicitly to ",
+      "set your own.",
+      call. = FALSE
+    )
+    return(.calibration_default_workload())
+  }
+
+  signif(
+    fraction * detected_gib * 1024^3 / TAPE_CALIBRATION$peak_bytes_per_unit, 1
+  )
+}
+
 #' @keywords internal
 #' @noRd
 .chk_poisson_flag <- function(x, arg) {
