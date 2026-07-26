@@ -62,7 +62,9 @@ summary.rpbnb_tmb_fit <- function(object, digits = 4L, ...) {
   cat("  Log-likelihood:", format(object$logLik, digits = 6),
       "  AIC:", format(AIC(object), digits = 6),
       "  BIC:", format(BIC(object), digits = 6), "\n")
-  cat("  Nobs:", object$nobs, "  Npar:", object$npar, "\n\n")
+  iterations <- object$optimizer$iterations
+  cat("  Nobs:", object$nobs, "  Npar:", object$npar,
+      if (!is.null(iterations)) c("  Iterations:", iterations), "\n\n")
 
   # ---- Equation 1 coefficients (b1:*) ----
   nm <- names(object$coef)

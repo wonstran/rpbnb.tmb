@@ -9,7 +9,7 @@ rpbnb_tmb_control(
   reltol = 1e-08,
   print_level = 0L,
   n_cores = 1L,
-  max_threads = 4L,
+  max_threads = n_cores,
   max_workload = rpbnb_tmb_max_workload(),
   parallel_tape = FALSE,
   halton_burn = 300L
@@ -24,8 +24,9 @@ rpbnb_tmb_control(
 
 \item{n_cores}{Number of OpenMP threads for TMB.}
 
-\item{max_threads}{Maximum OpenMP threads permitted for one fit. Increase
-explicitly to opt into a larger memory footprint.}
+\item{max_threads}{Maximum OpenMP threads permitted for one fit. Defaults
+to \code{n_cores}, so threads are not capped unless set explicitly below
+\code{n_cores}.}
 
 \item{max_workload}{Maximum weighted observation-draw evaluations permitted before TMB tape construction; \code{Inf} disables the guard. The default and every figure here are derived from \code{TAPE_CALIBRATION}, so this text cannot drift from the shipped behaviour.
 

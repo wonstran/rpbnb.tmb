@@ -531,8 +531,9 @@ copula <- function(family, par = NULL) {
 #' @param reltol Relative convergence tolerance.
 #' @param print_level Verbosity for nlminb.
 #' @param n_cores Number of OpenMP threads for TMB.
-#' @param max_threads Maximum OpenMP threads permitted for one fit. Increase
-#'   explicitly to opt into a larger memory footprint.
+#' @param max_threads Maximum OpenMP threads permitted for one fit. Defaults
+#'   to \code{n_cores}, so threads are not capped unless set explicitly below
+#'   \code{n_cores}.
 #' @eval .calibration_doc()
 #' @param parallel_tape Construct per-thread TMB tapes concurrently. The
 #'   default \code{FALSE} constructs them sequentially to reduce peak memory;
@@ -543,7 +544,7 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               reltol = 1e-8,
                               print_level = 0L,
                               n_cores = 1L,
-                              max_threads = 4L,
+                              max_threads = n_cores,
                               max_workload =
                                 rpbnb_tmb_max_workload(),
                               parallel_tape = FALSE,
