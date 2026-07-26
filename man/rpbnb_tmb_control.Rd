@@ -10,7 +10,7 @@ rpbnb_tmb_control(
   print_level = 0L,
   n_cores = 1L,
   max_threads = 4L,
-  max_workload = .calibration_default_workload(),
+  max_workload = rpbnb_tmb_max_workload(),
   parallel_tape = FALSE,
   halton_burn = 300L
 )
@@ -39,7 +39,9 @@ The budget is set on \emph{peak} working set, not on retained tape, because peak
 
 Families cost different amounts per unit, so each carries a weight -- the largest ratio to Famoye observed at matched workload: independence 0.7, famoye 1, frank 2.9, gaussian 1.1, clayton 1. Frank is nearly three times Famoye, so treating it as unweighted would under-budget it threefold.
 
-Raise \code{max_workload} deliberately against the memory you actually have, not to make one particular dataset fit.}
+Raise \code{max_workload} deliberately against the memory you actually have, not to make one particular dataset fit.
+
+As of \code{rpbnb_tmb_max_workload()}, the value \code{rpbnb_tmb_control()} actually uses by default is no longer the fixed figure above: it will auto-detect available memory and budget 80\% of it, falling back to the fixed 8 GiB figure only when detection is unavailable on the current platform. Call \code{\link{rpbnb_tmb_max_workload}} directly to set your own budget or detection fraction.}
 
 \item{parallel_tape}{Construct per-thread TMB tapes concurrently. The
 default \code{FALSE} constructs them sequentially to reduce peak memory;

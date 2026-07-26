@@ -92,7 +92,13 @@ TAPE_CALIBRATION <- list(
     ". Frank is nearly three times Famoye, so treating it as unweighted would ",
     "under-budget it threefold.\n\n",
     "Raise \\code{max_workload} deliberately against the memory you actually ",
-    "have, not to make one particular dataset fit."
+    "have, not to make one particular dataset fit.\n\n",
+    "As of \\code{rpbnb_tmb_max_workload()}, the value \\code{rpbnb_tmb_control()} ",
+    "actually uses by default is no longer the fixed figure above: it will ",
+    "auto-detect available memory and budget 80% of it, falling back to the ",
+    "fixed 8 GiB figure only when detection is unavailable on the current ",
+    "platform. Call \\code{\\link{rpbnb_tmb_max_workload}} directly to set ",
+    "your own budget or detection fraction."
   )
 }
 
@@ -104,6 +110,174 @@ TAPE_CALIBRATION <- list(
 #' @noRd
 .calibration_default_workload <- function(calibration = TAPE_CALIBRATION) {
   signif(calibration$budget_gib * 1024^3 / calibration$peak_bytes_per_unit, 1)
+}
+
+#' Available system memory, in GiB
+#'
+#' Best-effort and platform-specific. Every code path is wrapped so failure
+#' -- a missing binary, a locale-mangled number, a sandbox that blocks
+#' subprocess execution, an unrecognized OS -- degrades to `NA_real_` rather
+#' than propagating an error. This return value feeds a default argument
+#' (`rpbnb_tmb_control()`'s `max_workload`, by way of
+#' `rpbnb_tmb_max_workload()`); a default argument that can error breaks
+#' every caller who doesn't override it.
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib <- function() {
+  sysname <- tryCatch(Sys.info()[["sysname"]], error = function(e) NA_character_)
+  if (is.na(sysname)) return(NA_real_)
+
+  gib <- tryCatch({
+    if (identical(sysname, "Linux")) {
+      .detect_available_memory_gib_linux()
+    } else if (identical(sysname, "Darwin")) {
+      .detect_available_memory_gib_darwin()
+    } else if (identical(sysname, "Windows")) {
+      .detect_available_memory_gib_windows()
+    } else {
+      NA_real_
+    }
+  }, error = function(e) NA_real_)
+
+  if (length(gib) != 1L || !is.numeric(gib) || is.na(gib) ||
+      !is.finite(gib) || gib < 0) {
+    return(NA_real_)
+  }
+  gib
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_linux <- function() {
+  path <- "/proc/meminfo"
+  if (!file.exists(path)) return(NA_real_)
+  lines <- readLines(path, warn = FALSE)
+  # MemAvailable is the kernel's own reclaimable-cache-aware estimate of what
+  # can actually be handed to a new allocation; MemFree alone systematically
+  # undercounts memory the kernel would reclaim on request. Fall back to
+  # MemFree only on very old kernels that lack MemAvailable.
+  value_kib <- .parse_meminfo_field(lines, "MemAvailable")
+  if (is.na(value_kib)) value_kib <- .parse_meminfo_field(lines, "MemFree")
+  if (is.na(value_kib)) return(NA_real_)
+  value_kib / 1024^2
+}
+
+#' @keywords internal
+#' @noRd
+.parse_meminfo_field <- function(lines, field) {
+  pattern <- paste0("^", field, ":\\s*([0-9]+)\\s*kB")
+  hit <- grep(pattern, lines, value = TRUE)
+  if (!length(hit)) return(NA_real_)
+  as.numeric(sub(pattern, "\\1", hit[1L]))
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_darwin <- function() {
+  vm <- tryCatch(system2("vm_stat", stdout = TRUE, stderr = FALSE),
+                 error = function(e) character(0))
+  if (!length(vm)) return(NA_real_)
+
+  page_size_line <- grep("page size of", vm, value = TRUE)
+  page_size <- if (length(page_size_line)) {
+    as.numeric(sub(".*page size of ([0-9]+) bytes.*", "\\1", page_size_line[1L]))
+  } else {
+    4096  # Documented default when the header line's wording ever changes.
+  }
+  if (is.na(page_size) || page_size <= 0) return(NA_real_)
+
+  free_pages <- .parse_vm_stat_field(vm, "Pages free")
+  inactive_pages <- .parse_vm_stat_field(vm, "Pages inactive")
+  if (is.na(free_pages) || is.na(inactive_pages)) return(NA_real_)
+
+  (free_pages + inactive_pages) * page_size / 1024^3
+}
+
+#' @keywords internal
+#' @noRd
+.parse_vm_stat_field <- function(lines, field) {
+  pattern <- paste0("^", field, ":\\s*([0-9]+)\\.?")
+  hit <- grep(pattern, lines, value = TRUE)
+  if (!length(hit)) return(NA_real_)
+  as.numeric(sub(pattern, "\\1", hit[1L]))
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_windows <- function() {
+  out <- tryCatch(
+    system2("wmic", c("OS", "get", "FreePhysicalMemory", "/value"),
+            stdout = TRUE, stderr = FALSE),
+    error = function(e) character(0)
+  )
+  if (!length(out)) return(NA_real_)
+  hit <- grep("^FreePhysicalMemory=", out, value = TRUE)
+  if (!length(hit)) return(NA_real_)
+  value_kib <- suppressWarnings(
+    as.numeric(sub("^FreePhysicalMemory=", "", hit[1L]))
+  )
+  if (is.na(value_kib)) return(NA_real_)
+  value_kib / 1024^2
+}
+
+#' Compute a TMB workload budget from a memory figure
+#'
+#' Companion to \code{rpbnb_tmb_control()}'s \code{max_workload}: rather than
+#' picking a weighted-observation-draw count directly, state a memory budget
+#' and let this function do the arithmetic \code{TAPE_CALIBRATION} implies.
+#'
+#' With \code{budget_gib} omitted, this is also \code{rpbnb_tmb_control()}'s
+#' own default: every fit that doesn't set \code{max_workload} explicitly
+#' already goes through this function.
+#' @param budget_gib Optional memory budget in GiB, stated explicitly. When
+#'   supplied, used as-is -- \code{fraction} does not apply, because a number
+#'   you state yourself is not second-guessed with a discount. When omitted
+#'   (the default), available memory is auto-detected and \code{fraction} of
+#'   it is budgeted instead.
+#' @param fraction Of auto-detected available memory, the fraction to
+#'   actually budget; one number in \code{(0, 1]}. Available memory
+#'   fluctuates and competes with other processes, so budgeting all of it
+#'   risks the guard passing a fit that then exhausts memory anyway. Ignored
+#'   when \code{budget_gib} is supplied.
+#' @return One positive numeric workload value, on the same scale as
+#'   \code{rpbnb_tmb_control()}'s \code{max_workload}.
+#' @export
+#' @examples
+#' rpbnb_tmb_max_workload(budget_gib = 16)
+#' \dontrun{
+#' ctrl <- rpbnb_tmb_control(max_workload = rpbnb_tmb_max_workload())
+#' }
+rpbnb_tmb_max_workload <- function(budget_gib = NULL, fraction = 0.8) {
+  if (length(fraction) != 1L || !is.numeric(fraction) || is.na(fraction) ||
+      !is.finite(fraction) || fraction <= 0 || fraction > 1) {
+    stop("fraction must be one number in (0, 1].", call. = FALSE)
+  }
+
+  if (!is.null(budget_gib)) {
+    if (length(budget_gib) != 1L || !is.numeric(budget_gib) ||
+        is.na(budget_gib) || !is.finite(budget_gib) || budget_gib <= 0) {
+      stop("budget_gib must be one positive finite number, or NULL.",
+           call. = FALSE)
+    }
+    return(signif(
+      budget_gib * 1024^3 / TAPE_CALIBRATION$peak_bytes_per_unit, 1
+    ))
+  }
+
+  detected_gib <- .detect_available_memory_gib()
+  if (is.na(detected_gib)) {
+    warning(
+      "Could not detect available memory on this platform; using the ",
+      "default 8 GiB calibration budget. Pass `budget_gib` explicitly to ",
+      "set your own.",
+      call. = FALSE
+    )
+    return(.calibration_default_workload())
+  }
+
+  signif(
+    fraction * detected_gib * 1024^3 / TAPE_CALIBRATION$peak_bytes_per_unit, 1
+  )
 }
 
 #' @keywords internal
@@ -371,7 +545,7 @@ rpbnb_tmb_control <- function(iterlim = 500L,
                               n_cores = 1L,
                               max_threads = 4L,
                               max_workload =
-                                .calibration_default_workload(),
+                                rpbnb_tmb_max_workload(),
                               parallel_tape = FALSE,
                               halton_burn = 300L) {
   if (length(n_cores) != 1L || !is.numeric(n_cores) ||
