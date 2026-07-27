@@ -102,7 +102,7 @@
 .build_tmb_data <- function(Y1, Y2, X1, X2, rand_idx1, rand_idx2,
                             Z1, Z2, dist1, dist2, sign1, sign2,
                             family_code, pois1, pois2,
-                            lamLo, lamHi) {
+                            lamLo, lamHi, est_method) {
   list(
     Y1 = Y1, Y2 = Y2,
     X1 = unname(as.matrix(X1)), X2 = unname(as.matrix(X2)),
@@ -113,6 +113,7 @@
     sign1 = as.integer(sign1), sign2 = as.integer(sign2),
     family = as.integer(family_code),
     pois1 = as.integer(pois1), pois2 = as.integer(pois2),
-    lamLo = as.numeric(lamLo), lamHi = as.numeric(lamHi)
+    lamLo = as.numeric(lamLo), lamHi = as.numeric(lamHi),
+    est_method = as.integer(est_method)
   )
 }

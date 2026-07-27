@@ -61,6 +61,16 @@ first-evaluation growth* — roughly 12 kB per weighted observation-draw,
 measured directly against peak. The default of `7e5` units therefore targets
 about 8 GiB of peak memory for one fit.
 
+All of the above bounds the *simulated* likelihood, whose tape scales with
+`nrow(data) * draws`. `method = "laplace"` integrates the random coefficients
+with TMB's Laplace approximation instead, taping one conditional evaluation per
+observation and integrating the latents through a sparse Hessian. Tape size then
+scales with `nrow(data)` alone and the draw budget stops binding. That is the
+option to reach for when a fit exhausts memory during `MakeADFun()`, rather than
+raising `max_workload` against RAM you do not have. It supports normal and
+lognormal random coefficients, and it is a different approximation to the same
+integral — see `?fit_rpbnb_tmb`.
+
 Families differ, so each carries a measured weight: the largest **peak** ratio
 to Famoye at matched workload, rounded up to the next tenth. Peak rather than
 retained tape, because peak is the quantity being budgeted — the two disagree

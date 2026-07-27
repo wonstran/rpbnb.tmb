@@ -214,6 +214,9 @@ Type objective_function<Type>::operator() () {
   DATA_INTEGER(pois2);
   DATA_SCALAR(lamLo);
   DATA_SCALAR(lamHi);
+  // 0 = simulated maximum likelihood (Halton draws)
+  // 1 = Laplace approximation (latent u1/u2 integrated by TMB)
+  DATA_INTEGER(est_method);
 
   // ---- Parameters ----
   PARAMETER_VECTOR(beta1);
@@ -223,6 +226,11 @@ Type objective_function<Type>::operator() () {
   PARAMETER(log_m1);
   PARAMETER(log_m2);
   PARAMETER(z_dep);
+  // Latent standard normals, one row per observation. Under est_method == 0
+  // these are map-fixed at zero in R and never read; under est_method == 1
+  // they are TMB random effects.
+  PARAMETER_MATRIX(u1);
+  PARAMETER_MATRIX(u2);
 
   // ---- Dimensions ----
   int n = Y1.size();
@@ -231,6 +239,9 @@ Type objective_function<Type>::operator() () {
   int q1 = rand_idx1.size();
   int q2 = rand_idx2.size();
   int R = (q1 + q2 > 0) ? Z1.rows() : 1;
+  // Laplace evaluates the conditional density once at the current latent
+  // values; there is no draw dimension to average over.
+  if (est_method == 1) R = 1;
   int openmp_compiled = 0;
 #ifdef _OPENMP
   openmp_compiled = 1;
@@ -334,18 +345,20 @@ Type objective_function<Type>::operator() () {
   // Precompute parameter-dependent deviations once per simulation draw.  The
   // matrices are read-only while observation contributions are accumulated.
   matrix<Type> dev1(R, q1), dev2(R, q2);
-  for (int r = 0; r < R; r++) {
-    for (int j = 0; j < q1; j++) {
-      Type base = u_to_base(Z1(r, j), dist1(j));
-      int col = rand_idx1(j);
-      dev1(r, j) = compute_dev(beta1(col), sd1(j), base,
-                               dist1(j), sign1(j));
-    }
-    for (int j = 0; j < q2; j++) {
-      Type base = u_to_base(Z2(r, j), dist2(j));
-      int col = rand_idx2(j);
-      dev2(r, j) = compute_dev(beta2(col), sd2(j), base,
-                               dist2(j), sign2(j));
+  if (est_method != 1) {
+    for (int r = 0; r < R; r++) {
+      for (int j = 0; j < q1; j++) {
+        Type base = u_to_base(Z1(r, j), dist1(j));
+        int col = rand_idx1(j);
+        dev1(r, j) = compute_dev(beta1(col), sd1(j), base,
+                                 dist1(j), sign1(j));
+      }
+      for (int j = 0; j < q2; j++) {
+        Type base = u_to_base(Z2(r, j), dist2(j));
+        int col = rand_idx2(j);
+        dev2(r, j) = compute_dev(beta2(col), sd2(j), base,
+                                 dist2(j), sign2(j));
+      }
     }
   }
 
@@ -361,10 +374,27 @@ Type objective_function<Type>::operator() () {
       Type eta1 = xb1(i);
       Type eta2 = xb2(i);
       for (int j = 0; j < q1; j++) {
-        eta1 += X1(i, rand_idx1(j)) * dev1(r, j);
+        int col = rand_idx1(j);
+        // u_to_base() is deliberately NOT applied to the latent: it is a
+        // per-distribution inverse CDF, not a general uniform-to-normal map,
+        // and skipping it is only valid because u_to_base == qnorm for the
+        // normal/lognormal distributions the Laplace path is restricted to.
+        // fit_rpbnb_tmb() enforces that restriction on the R side by
+        // rejecting method = "laplace" with uniform/triangular coefficients.
+        Type d = (est_method == 1)
+          ? compute_dev(beta1(col), sd1(j), u1(i, j), dist1(j), sign1(j))
+          : dev1(r, j);
+        eta1 += X1(i, col) * d;
       }
       for (int j = 0; j < q2; j++) {
-        eta2 += X2(i, rand_idx2(j)) * dev2(r, j);
+        int col = rand_idx2(j);
+        // Same restriction as the u1 loop above: u_to_base() is skipped
+        // because the Laplace path only allows normal/lognormal
+        // coefficients, for which u_to_base == qnorm.
+        Type d = (est_method == 1)
+          ? compute_dev(beta2(col), sd2(j), u2(i, j), dist2(j), sign2(j))
+          : dev2(r, j);
+        eta2 += X2(i, col) * d;
       }
 
       Type mu1 = exp(clamp_ad(eta1, eta_floor1,
@@ -501,17 +531,26 @@ Type objective_function<Type>::operator() () {
       }
     }
 
-    Type max_log = log_draw(0);
-    for (int r = 1; r < R; r++) {
-      max_log = CppAD::CondExpGt(log_draw(r), max_log,
-                                 log_draw(r), max_log);
+    if (est_method == 1) {
+      Type obs_ll = log_draw(0);
+      for (int j = 0; j < q1; j++)
+        obs_ll += dnorm(u1(i, j), Type(0), Type(1), true);
+      for (int j = 0; j < q2; j++)
+        obs_ll += dnorm(u2(i, j), Type(0), Type(1), true);
+      nll -= obs_ll;
+    } else {
+      Type max_log = log_draw(0);
+      for (int r = 1; r < R; r++) {
+        max_log = CppAD::CondExpGt(log_draw(r), max_log,
+                                   log_draw(r), max_log);
+      }
+      Type scaled_sum = Type(0);
+      for (int r = 0; r < R; r++) {
+        scaled_sum += exp(log_draw(r) - max_log);
+      }
+      Type log_contribution = max_log + log(scaled_sum) - logR;
+      nll -= log_contribution;
     }
-    Type scaled_sum = Type(0);
-    for (int r = 0; r < R; r++) {
-      scaled_sum += exp(log_draw(r) - max_log);
-    }
-    Type log_contribution = max_log + log(scaled_sum) - logR;
-    nll -= log_contribution;
   }
 
   // ---- REPORT derived parameters for sdreport ----

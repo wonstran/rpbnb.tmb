@@ -23,6 +23,7 @@ print.rpbnb_tmb_fit <- function(x, ...) {
   if (!is.null(x$parallel$realized)) {
     cat(sprintf("  TMB threads: %d\n", as.integer(x$parallel$realized)))
   }
+  cat("  Estimator:", if (is.null(x$method)) "sml" else x$method, "\n")
   cat("  Dependence:", deparse(x$dependence), "\n")
   cat("\nCoefficients:\n")
   print(round(x$coef, 4))
@@ -64,7 +65,9 @@ summary.rpbnb_tmb_fit <- function(object, digits = 4L, ...) {
       "  BIC:", format(BIC(object), digits = 6), "\n")
   iterations <- object$optimizer$iterations
   cat("  Nobs:", object$nobs, "  Npar:", object$npar,
-      if (!is.null(iterations)) c("  Iterations:", iterations), "\n\n")
+      if (!is.null(iterations)) c("  Iterations:", iterations), "\n")
+  cat("  Estimator:", if (is.null(object$method)) "sml" else object$method,
+      "\n\n")
 
   # ---- Equation 1 coefficients (b1:*) ----
   nm <- names(object$coef)

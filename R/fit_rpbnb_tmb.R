@@ -10,7 +10,13 @@
 #'   fixed), character vector (all Normal), or named list with per-variable
 #'   distribution specs (\code{"normal"}, \code{"lognormal"}, \code{"uniform"},
 #'   \code{"triangular"}).
-#' @param draws Number of Halton simulation draws.
+#' @param draws Number of Halton simulation draws. Under
+#'   \code{method = "sml"} this sets the simulation grid the likelihood is
+#'   averaged over, and tape size scales with \code{nrow(data) * draws}. Under
+#'   \code{method = "laplace"} it does not affect the likelihood or the tape,
+#'   but still sizes the Halton grid used for the frozen Famoye lambda bounds
+#'   and for the post-estimation averaging in \code{predict()} and the
+#'   marginal-effect functions.
 #' @param seed Random seed for draws.
 #' @param start Optional starting parameter vector (named or positional).
 #' @param dependence Dependence structure: "famoye", "independence", or a
@@ -26,8 +32,30 @@
 #'   diagnostics that access \code{fit$obj} require \code{"full"}.
 #' @param poisson_1,poisson_2 Fit the corresponding margin at its exact Poisson
 #'   limit (NB2 dispersion m = 0, held fixed).
+#' @param method Estimator for the random-coefficient integral. \code{"sml"}
+#'   (default) uses simulated maximum likelihood over Halton draws.
+#'   \code{"laplace"} uses TMB's Laplace approximation with a sparse Hessian
+#'   over one latent vector per observation, which removes \code{draws} from
+#'   the memory cost and makes tape size scale with \code{nrow(data)} alone.
+#'
+#'   The two are different approximations to the same integral. They agree
+#'   asymptotically but need not agree closely on any given dataset, so a
+#'   Laplace fit is not a drop-in reproduction of an SML fit. \code{"laplace"}
+#'   supports \code{"normal"} and \code{"lognormal"} random coefficients only,
+#'   and requires at least one random coefficient.
+#'
+#'   \code{summary()} reports AIC and BIC for either estimator, but under
+#'   \code{"laplace"} they are computed from an approximated marginal
+#'   likelihood rather than the exact one, so an AIC from a Laplace fit is not
+#'   meaningful to compare against an AIC from an SML fit of the same model.
 #' @return An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 #'   is a compact package-owned summary and does not retain a second TMB tape.
+#'
+#'   \code{method} records which estimator produced the fit, echoing the
+#'   \code{method} argument (\code{"sml"} or \code{"laplace"}). Both
+#'   \code{print()} and \code{summary()} display it, so two fits of the same
+#'   model under different estimators are distinguishable in their printed
+#'   output.
 #'
 #'   \code{boundary_report} is a character vector naming the reported
 #'   quantities whose estimates are pinned against an implementation bound --
@@ -74,7 +102,8 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
                           control = rpbnb_tmb_control(),
                           inference = c("full", "diag", "none"),
                           keep = c("postfit", "compact", "full"),
-                          poisson_1 = FALSE, poisson_2 = FALSE) {
+                          poisson_1 = FALSE, poisson_2 = FALSE,
+                          method = c("sml", "laplace")) {
   had_random_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   if (had_random_seed) {
     saved_random_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
@@ -90,6 +119,7 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   stopifnot(is.data.frame(data))
   inference <- match.arg(inference)
   keep <- match.arg(keep)
+  method <- match.arg(method)
   .chk_poisson_flag(poisson_1, "poisson_1")
   .chk_poisson_flag(poisson_2, "poisson_2")
   if (length(draws) != 1L || !is.numeric(draws) || is.na(draws) ||
@@ -138,7 +168,41 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   q1 <- length(rand_idx1); q2 <- length(rand_idx2)
   k1 <- ncol(X1); k2 <- ncol(X2)
   total_rand <- q1 + q2
-  effective_draws <- if (total_rand > 0L) draws else 1L
+  if (identical(method, "laplace")) {
+    if (total_rand == 0L) {
+      stop("method = \"laplace\" needs at least one random coefficient to ",
+           "integrate. Use method = \"sml\", or specify random_1/random_2.",
+           call. = FALSE)
+    }
+    bad_dist <- unique(c(spec1$dist, spec2$dist))
+    bad_dist <- bad_dist[!bad_dist %in% c("normal", "lognormal")]
+    if (length(bad_dist)) {
+      stop("method = \"laplace\" supports only normal and lognormal random ",
+           "coefficients; got ", paste(bad_dist, collapse = ", "),
+           ". Use method = \"sml\" for these distributions.", call. = FALSE)
+    }
+  }
+  # Laplace tapes one conditional evaluation per observation, so the draw
+  # dimension is genuinely absent.  It is not free, though: the cost that
+  # replaces it is the latent dimension n * (q1 + q2), which sizes the random
+  # -effect vector and its sparse Hessian.  Budgeting `1L` here would leave
+  # max_workload bounding nothing at all on the very path introduced to solve
+  # a memory problem, so the multiplier is the per-observation latent count.
+  # TAPE_CALIBRATION$peak_bytes_per_unit was measured on the SML path (bytes
+  # per observation-draw of SML tape) and has NOT been recalibrated for a
+  # latent integrated out through a sparse Hessian. The one Laplace
+  # measurement available -- the truck acceptance fit -- predicted about
+  # 322 MiB from this constant but measured a 1,222 MB peak working set, ~3-4x
+  # higher even allowing for R's own baseline. So on this path max_workload is
+  # a coarse guard (it will reject workloads that are truly enormous) rather
+  # than a tight one (it should not be trusted to predict the actual peak).
+  effective_draws <- if (identical(method, "laplace")) {
+    total_rand
+  } else if (total_rand > 0L) {
+    draws
+  } else {
+    1L
+  }
   configured_threads <- .configure_tmb_threads(
     control$n_cores,
     max_threads = control$max_threads,
@@ -226,10 +290,15 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   }
 
   # Build TMB object
+  # Under Laplace the template never indexes a draw dimension; Z1/Z2 stay real
+  # in R because the lambda-bound loop and rp_meta still consume them.
+  Z1_tmb <- if (identical(method, "laplace")) matrix(0, 1, q1) else Z1
+  Z2_tmb <- if (identical(method, "laplace")) matrix(0, 1, q2) else Z2
   tmb_data <- .build_tmb_data(Y1, Y2, X1, X2, rand_idx1, rand_idx2,
-                              Z1, Z2, dist1, dist2, sign1, sign2,
+                              Z1_tmb, Z2_tmb, dist1, dist2, sign1, sign2,
                               family_code, poisson_1, poisson_2,
-                              lamLo, lamHi)
+                              lamLo, lamHi,
+                              est_method = if (identical(method, "laplace")) 1L else 0L)
   # Map fixed parameters (e.g., pinned log_m for Poisson margins)
   map <- list()
   if (length(fixed_names)) {
@@ -241,9 +310,21 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   if (family_code < 0L) {
     map[["z_dep"]] <- factor(NA)
   }
+  # SML: the latents are tape constants at zero and are never read by the
+  # template. Laplace: they are random effects and must stay free.
+  if (!identical(method, "laplace")) {
+    if (n * q1 > 0) map[["u1"]] <- factor(rep(NA_integer_, n * q1))
+    if (n * q2 > 0) map[["u2"]] <- factor(rep(NA_integer_, n * q2))
+  }
 
   i1 <- 1:k1; i2 <- (k1 + 1):(k1 + k2)
   idx_end <- k1 + k2 + q1 + q2
+
+  random_names <- if (identical(method, "laplace")) {
+    c(if (q1 > 0) "u1", if (q2 > 0) "u2")
+  } else {
+    NULL
+  }
 
   configured <- .make_rpbnb_tmb_object(
     data = tmb_data,
@@ -254,9 +335,12 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
       log_sd2 = if (q2 > 0) start[(k1 + k2 + q1 + 1):(k1 + k2 + q1 + q2)] else numeric(0),
       log_m1 = start[idx_end + 1],
       log_m2 = start[idx_end + 2],
-      z_dep = if (family_code >= 0L) start[idx_end + 3] else 0
+      z_dep = if (family_code >= 0L) start[idx_end + 3] else 0,
+      u1 = matrix(0, n, q1),
+      u2 = matrix(0, n, q2)
     ),
     map = if (length(map) > 0) map else NULL,
+    random = random_names,
     silent = control$print_level == 0L,
     n_cores = configured_threads,
     max_threads = configured_threads,
@@ -333,6 +417,7 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     sdreport = inference_result$sdreport,
     obj = if (keep == "full") obj else NULL,
     inference = inference,
+    method = method,
     boundary_report = inference_result$boundary_report,
     # Kept on the fit, not only in the warning: the two sides of a clamp call
     # for opposite remedies, and a suppressed or long-since-scrolled-past

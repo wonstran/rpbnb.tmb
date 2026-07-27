@@ -18,7 +18,8 @@ fit_rpbnb_tmb(
   inference = c("full", "diag", "none"),
   keep = c("postfit", "compact", "full"),
   poisson_1 = FALSE,
-  poisson_2 = FALSE
+  poisson_2 = FALSE,
+  method = c("sml", "laplace")
 )
 }
 \arguments{
@@ -31,7 +32,13 @@ fixed), character vector (all Normal), or named list with per-variable
 distribution specs (\code{"normal"}, \code{"lognormal"}, \code{"uniform"},
 \code{"triangular"}).}
 
-\item{draws}{Number of Halton simulation draws.}
+\item{draws}{Number of Halton simulation draws. Under
+\code{method = "sml"} this sets the simulation grid the likelihood is
+averaged over, and tape size scales with \code{nrow(data) * draws}. Under
+\code{method = "laplace"} it does not affect the likelihood or the tape,
+but still sizes the Halton grid used for the frozen Famoye lambda bounds
+and for the post-estimation averaging in \code{predict()} and the
+marginal-effect functions.}
 
 \item{seed}{Random seed for draws.}
 
@@ -54,10 +61,33 @@ diagnostics that access \code{fit$obj} require \code{"full"}.}
 
 \item{poisson_1, poisson_2}{Fit the corresponding margin at its exact Poisson
 limit (NB2 dispersion m = 0, held fixed).}
+
+\item{method}{Estimator for the random-coefficient integral. \code{"sml"}
+(default) uses simulated maximum likelihood over Halton draws.
+\code{"laplace"} uses TMB's Laplace approximation with a sparse Hessian
+over one latent vector per observation, which removes \code{draws} from
+the memory cost and makes tape size scale with \code{nrow(data)} alone.
+
+The two are different approximations to the same integral. They agree
+asymptotically but need not agree closely on any given dataset, so a
+Laplace fit is not a drop-in reproduction of an SML fit. \code{"laplace"}
+supports \code{"normal"} and \code{"lognormal"} random coefficients only,
+and requires at least one random coefficient.
+
+\code{summary()} reports AIC and BIC for either estimator, but under
+\code{"laplace"} they are computed from an approximated marginal
+likelihood rather than the exact one, so an AIC from a Laplace fit is not
+meaningful to compare against an AIC from an SML fit of the same model.}
 }
 \value{
 An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 is a compact package-owned summary and does not retain a second TMB tape.
+
+\code{method} records which estimator produced the fit, echoing the
+\code{method} argument (\code{"sml"} or \code{"laplace"}). Both
+\code{print()} and \code{summary()} display it, so two fits of the same
+model under different estimators are distinguishable in their printed
+output.
 
 \code{boundary_report} is a character vector naming the reported
 quantities whose estimates are pinned against an implementation bound --

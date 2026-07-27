@@ -6,17 +6,22 @@ Add a second estimator to `fit_rpbnb_tmb()` that integrates the random coefficie
 Laplace approximation instead of Halton simulation, so that fits whose tape size is currently
 bounded by `n x draws` become bounded by `n` alone.
 
-The concrete target is `inst/truck_rpbnb_diff_famoye_dense.R`: 12,083 observations, four random
+The concrete target is `inst/truck_rpbnb_diff_famoye_dense.R`: 3,487 observations, four random
 slopes per equation, Famoye dependence, 300 draws. That configuration exhausts memory during
 `MakeADFun()` on a 31 GB machine. Under the new path it must fit.
+
+(An earlier revision of this document said 12,083 observations. That was a misreading of the demo
+script's `max_workload = 32*1024^3/12083`, where 12,083 is `TAPE_CALIBRATION$peak_bytes_per_unit`,
+not the row count. The dataset has 3,487 rows.)
 
 ## Background: why the current path runs out of memory
 
 The simulated maximum likelihood (SML) objective tapes every one of the `n x R` conditional
 density evaluations. `src/rpbnb.tmb.cpp:357` loops over observations, `:360` over draws, and the
 full Famoye or copula density is recorded inside both. Measured tape cost is roughly 853 bytes per
-observation-draw for Famoye, so the truck workload records about 12,083 x 300 x 853 = 3.1 GB of
-tape, and peak working set during construction runs several times that.
+observation-draw for Famoye, so the truck workload records about 3,487 x 300 x 853 = 0.9 GB of
+tape, and peak working set during construction runs several times that — the guard's own
+calibration puts the budgeted peak at 3,487 x 300 x 12,083 bytes, about 12.6 GiB.
 
 No amount of thread or workload tuning changes the scaling. The memory investigation in
 `comments/review_2026-07-24-1928.md` established that `parallel_tape = FALSE` removes a thread
@@ -160,16 +165,39 @@ therefore keep their existing meaning for bounds and post-estimation averaging.
 
 ### Guardrails
 
-`.check_tmb_workload()` is called with `draws = 1L` under Laplace. The tape genuinely is O(n), so
-the guard measures the right quantity rather than being disabled. The truck workload evaluates to
-12,083 x 1 x 1 = 1.2e4 against a default `max_workload` of 2e6, which passes without the caller
-needing to override anything.
+`.check_tmb_workload()` is called with `draws = total_rand` under Laplace, not `draws = 1L`. The draw
+dimension is genuinely absent from the tape, but it is not replaced by nothing: the cost that takes
+its place is the latent dimension `n * (q1 + q2)`, which sizes the random-effect vector and its
+sparse Hessian. Budgeting `1L` would leave `max_workload` bounding essentially nothing on the very
+path introduced to solve a memory problem. The truck workload evaluates to 3,487 x 8 = 27,896
+weighted units. At `TAPE_CALIBRATION$peak_bytes_per_unit` (12,083 bytes/unit) that predicts about
+322 MiB — use the calibration constant rather than the README's rounded "12 kB per unit". Against
+the SML path's 1,046,100 units for the same model, that is a 37x reduction in budgeted workload.
+
+That 322 MiB is only a prediction, though, and the one measurement available shows it is optimistic.
+The truck acceptance run's actual peak working set measured 1,222 MB — roughly 3-4x the prediction,
+even allowing for R's own baseline footprint. The reason is that `peak_bytes_per_unit` was calibrated
+from `inst/benchmark_memory.R` on the SML path, i.e. bytes per observation-*draw* of SML tape, and has
+not been recalibrated for what a Laplace unit actually costs: a latent integrated out through a sparse
+Hessian is a different kind of memory consumer than a replayed draw, and nothing has re-run the
+calibration harness under `est_method = 1` to find its true per-unit cost. Until that recalibration
+happens, `max_workload` on the Laplace path is a coarse guard -- it will still reject workloads that
+are truly enormous -- rather than a tight one, and should not be read as predicting the actual peak.
+
+Note that `rpbnb_tmb_max_workload()` detects *available* memory at call time rather than returning
+a fixed constant or a function of total RAM, so the budget it yields is machine- and
+moment-dependent: it returned 9e5 on the development machine during this work, against the 7e5 of
+the 8 GiB reference case the README documents. The truck fit clears both comfortably and does not
+need the `max_workload` override the SML demo script carries.
+
+(Revised during implementation, from an original `draws = 1L`, after review observed that the
+original made the guard vacuous on the Laplace path.)
 
 `.configure_tmb_threads()` is unchanged, including the `parallel_tape = FALSE` default that keeps
 tape construction sequential.
 
 Expected truck-fit footprint: roughly 10 MB of likelihood tape, an ADGrad tape of similar order, and
-a sparse Hessian over 12,083 x 8 = 96,664 latents. That Hessian is block diagonal with 12,083
+a sparse Hessian over 3,487 x 8 = 27,896 latents. That Hessian is block diagonal with 3,487
 independent 8 x 8 blocks, because no latent is shared across observations, so its Cholesky factor
 carries no fill beyond the blocks themselves.
 

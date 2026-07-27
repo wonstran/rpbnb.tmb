@@ -291,12 +291,13 @@ cpp_report_value <- function(family_code, log_m1 = log(0.6), z_dep = 0.5) {
     dist1 = integer(0), dist2 = integer(0),
     sign1 = integer(0), sign2 = integer(0),
     family_code = family_code, pois1 = FALSE, pois2 = FALSE,
-    lamLo = -1, lamHi = 1
+    lamLo = -1, lamHi = 1, est_method = 0L
   )
   parameters <- list(
     beta1 = c(0.1, 0.2), beta2 = c(-0.1, -0.15),
     log_sd1 = numeric(0), log_sd2 = numeric(0),
-    log_m1 = log_m1, log_m2 = log(0.7), z_dep = z_dep
+    log_m1 = log_m1, log_m2 = log(0.7), z_dep = z_dep,
+    u1 = matrix(0, 8L, 0L), u2 = matrix(0, 8L, 0L)
   )
   obj <- suppressWarnings(
     .make_rpbnb_tmb_object(
