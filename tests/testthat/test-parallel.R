@@ -8,12 +8,13 @@ parallel_tmb_fixture <- function() {
     dist1 = integer(0), dist2 = integer(0),
     sign1 = integer(0), sign2 = integer(0),
     family_code = -1L, pois1 = FALSE, pois2 = FALSE,
-    lamLo = -1, lamHi = 1
+    lamLo = -1, lamHi = 1, est_method = 0L
   )
   parameters <- list(
     beta1 = 0, beta2 = 0,
     log_sd1 = numeric(0), log_sd2 = numeric(0),
-    log_m1 = log(0.5), log_m2 = log(0.5), z_dep = 0
+    log_m1 = log(0.5), log_m2 = log(0.5), z_dep = 0,
+    u1 = matrix(0, 2L, 0L), u2 = matrix(0, 2L, 0L)
   )
   list(data = data, parameters = parameters,
        map = list(z_dep = factor(NA)))
@@ -33,15 +34,21 @@ copula_parallel_fixture <- function(family_code) {
     dist1 = 0L, dist2 = 0L,
     sign1 = 1L, sign2 = 1L,
     family_code = family_code, pois1 = FALSE, pois2 = FALSE,
-    lamLo = 0, lamHi = 0
+    lamLo = 0, lamHi = 0, est_method = 0L
   )
   parameters <- list(
     beta1 = c(0.1, 0.2), beta2 = c(-0.1, -0.15),
     log_sd1 = log(0.2), log_sd2 = log(0.25),
     log_m1 = log(0.6), log_m2 = log(0.7),
-    z_dep = if (family_code == 1L) 1.5 else atanh(0.25)
+    z_dep = if (family_code == 1L) 1.5 else atanh(0.25),
+    u1 = matrix(0, 8L, 1L), u2 = matrix(0, 8L, 1L)
   )
-  list(data = data, parameters = parameters, map = NULL)
+  # SML fixture: latents are tape constants at zero, matching the map applied
+  # in fit_rpbnb_tmb() for est_method == 0 (see R/fit_rpbnb_tmb.R). Fixed here
+  # so obj$par and the hardcoded reference_gr values below are unaffected.
+  list(data = data, parameters = parameters,
+       map = list(u1 = factor(rep(NA_integer_, 8L)),
+                  u2 = factor(rep(NA_integer_, 8L))))
 }
 
 parallel_fit_data <- function() {

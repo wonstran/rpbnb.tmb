@@ -229,7 +229,7 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   tmb_data <- .build_tmb_data(Y1, Y2, X1, X2, rand_idx1, rand_idx2,
                               Z1, Z2, dist1, dist2, sign1, sign2,
                               family_code, poisson_1, poisson_2,
-                              lamLo, lamHi)
+                              lamLo, lamHi, est_method = 0L)
   # Map fixed parameters (e.g., pinned log_m for Poisson margins)
   map <- list()
   if (length(fixed_names)) {
@@ -241,6 +241,11 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   if (family_code < 0L) {
     map[["z_dep"]] <- factor(NA)
   }
+  # SML: the latents are tape constants at zero and are never read by the
+  # template. Guarded on non-zero length because TMB rejects a map entry for a
+  # zero-length parameter.
+  if (n * q1 > 0) map[["u1"]] <- factor(rep(NA_integer_, n * q1))
+  if (n * q2 > 0) map[["u2"]] <- factor(rep(NA_integer_, n * q2))
 
   i1 <- 1:k1; i2 <- (k1 + 1):(k1 + k2)
   idx_end <- k1 + k2 + q1 + q2
@@ -254,7 +259,9 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
       log_sd2 = if (q2 > 0) start[(k1 + k2 + q1 + 1):(k1 + k2 + q1 + q2)] else numeric(0),
       log_m1 = start[idx_end + 1],
       log_m2 = start[idx_end + 2],
-      z_dep = if (family_code >= 0L) start[idx_end + 3] else 0
+      z_dep = if (family_code >= 0L) start[idx_end + 3] else 0,
+      u1 = matrix(0, n, q1),
+      u2 = matrix(0, n, q2)
     ),
     map = if (length(map) > 0) map else NULL,
     silent = control$print_level == 0L,

@@ -214,6 +214,9 @@ Type objective_function<Type>::operator() () {
   DATA_INTEGER(pois2);
   DATA_SCALAR(lamLo);
   DATA_SCALAR(lamHi);
+  // 0 = simulated maximum likelihood (Halton draws)
+  // 1 = Laplace approximation (latent u1/u2 integrated by TMB)
+  DATA_INTEGER(est_method);
 
   // ---- Parameters ----
   PARAMETER_VECTOR(beta1);
@@ -223,6 +226,11 @@ Type objective_function<Type>::operator() () {
   PARAMETER(log_m1);
   PARAMETER(log_m2);
   PARAMETER(z_dep);
+  // Latent standard normals, one row per observation. Under est_method == 0
+  // these are map-fixed at zero in R and never read; under est_method == 1
+  // they are TMB random effects.
+  PARAMETER_MATRIX(u1);
+  PARAMETER_MATRIX(u2);
 
   // ---- Dimensions ----
   int n = Y1.size();
@@ -231,6 +239,7 @@ Type objective_function<Type>::operator() () {
   int q1 = rand_idx1.size();
   int q2 = rand_idx2.size();
   int R = (q1 + q2 > 0) ? Z1.rows() : 1;
+  (void)u1; (void)u2; (void)est_method;
   int openmp_compiled = 0;
 #ifdef _OPENMP
   openmp_compiled = 1;
