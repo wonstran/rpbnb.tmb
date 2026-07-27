@@ -165,8 +165,12 @@ dimension is genuinely absent from the tape, but it is not replaced by nothing: 
 its place is the latent dimension `n * (q1 + q2)`, which sizes the random-effect vector and its
 sparse Hessian. Budgeting `1L` would leave `max_workload` bounding essentially nothing on the very
 path introduced to solve a memory problem. The truck workload evaluates to 12,083 x 8 = 96,664
-against a default `max_workload` of 9e5, so it passes with roughly nine times headroom and without
-the caller needing the override the SML demo script carries.
+weighted units, roughly 1.2 GiB at the calibrated 12 kB per unit.
+
+Note that `rpbnb_tmb_max_workload()` detects available memory rather than returning a fixed
+constant, so the budget it yields is machine-dependent: 9e5 on the 31 GB development machine, and
+7e5 at the 8 GiB reference case the README documents. The truck fit clears both comfortably and
+does not need the `max_workload` override the SML demo script carries.
 
 (Revised during implementation, from an original `draws = 1L`, after review observed that the
 original made the guard vacuous on the Laplace path.)
