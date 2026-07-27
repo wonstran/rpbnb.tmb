@@ -345,7 +345,7 @@ Type objective_function<Type>::operator() () {
   // Precompute parameter-dependent deviations once per simulation draw.  The
   // matrices are read-only while observation contributions are accumulated.
   matrix<Type> dev1(R, q1), dev2(R, q2);
-  if (est_method == 0) {
+  if (est_method != 1) {
     for (int r = 0; r < R; r++) {
       for (int j = 0; j < q1; j++) {
         Type base = u_to_base(Z1(r, j), dist1(j));
@@ -375,9 +375,12 @@ Type objective_function<Type>::operator() () {
       Type eta2 = xb2(i);
       for (int j = 0; j < q1; j++) {
         int col = rand_idx1(j);
-        // u_to_base() is deliberately NOT applied to the latent: it maps a
-        // uniform draw to a standard-normal base, and the latent already IS
-        // that base.
+        // u_to_base() is deliberately NOT applied to the latent: it is a
+        // per-distribution inverse CDF, not a general uniform-to-normal map,
+        // and skipping it is only valid because u_to_base == qnorm for the
+        // normal/lognormal distributions the Laplace path is restricted to.
+        // fit_rpbnb_tmb() enforces that restriction on the R side by
+        // rejecting method = "laplace" with uniform/triangular coefficients.
         Type d = (est_method == 1)
           ? compute_dev(beta1(col), sd1(j), u1(i, j), dist1(j), sign1(j))
           : dev1(r, j);
@@ -385,6 +388,9 @@ Type objective_function<Type>::operator() () {
       }
       for (int j = 0; j < q2; j++) {
         int col = rand_idx2(j);
+        // Same restriction as the u1 loop above: u_to_base() is skipped
+        // because the Laplace path only allows normal/lognormal
+        // coefficients, for which u_to_base == qnorm.
         Type d = (est_method == 1)
           ? compute_dev(beta2(col), sd2(j), u2(i, j), dist2(j), sign2(j))
           : dev2(r, j);
@@ -526,11 +532,12 @@ Type objective_function<Type>::operator() () {
     }
 
     if (est_method == 1) {
-      nll -= log_draw(0);
+      Type obs_ll = log_draw(0);
       for (int j = 0; j < q1; j++)
-        nll -= dnorm(u1(i, j), Type(0), Type(1), true);
+        obs_ll += dnorm(u1(i, j), Type(0), Type(1), true);
       for (int j = 0; j < q2; j++)
-        nll -= dnorm(u2(i, j), Type(0), Type(1), true);
+        obs_ll += dnorm(u2(i, j), Type(0), Type(1), true);
+      nll -= obs_ll;
     } else {
       Type max_log = log_draw(0);
       for (int r = 1; r < R; r++) {
