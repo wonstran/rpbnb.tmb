@@ -100,3 +100,106 @@ test_that("laplace keeps draws meaningful for post-estimation averaging", {
   # fixed parameter was accidentally freed or mapped off.
   expect_identical(length(fit$optimizer$par), 7L)
 })
+
+test_that("laplace engages TMB's sparse random-effect machinery", {
+  skip_on_cran()
+  sim <- simulate_rpbnb_tmb(
+    n = 200,
+    beta1 = c("(Intercept)" = 0.2, x1 = 0.4),
+    beta2 = c("(Intercept)" = 0.1, x1 = -0.3),
+    random_1 = list(x1 = list(sd = 0.3)),
+    dispersion = c(m1 = 0.4, m2 = 0.5),
+    dependence = "famoye", lambda = 0, seed = 11
+  )
+  fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = sim$data,
+                       random_1 = "x1", dependence = "famoye",
+                       draws = 50, method = "laplace", keep = "full")
+  # One latent per observation per random coefficient. If this is 0 the fit
+  # silently ran a fixed-effect model at u = 0 instead of integrating.
+  expect_identical(length(fit$obj$env$random), 200L)
+  expect_true(is.finite(fit$logLik))
+})
+
+test_that("laplace and sml agree on data simulated from the true process", {
+  skip_on_cran()
+  sim <- simulate_rpbnb_tmb(
+    n = 500,
+    beta1 = c("(Intercept)" = 0.5, x1 = 0.3),
+    beta2 = c("(Intercept)" = 0.2, x1 = -0.2),
+    random_1 = list(x1 = list(sd = 0.4)),
+    dispersion = c(m1 = 0.4, m2 = 0.5),
+    dependence = "famoye", lambda = 0.2, seed = 21
+  )
+  common <- list(formula_1 = y1 ~ x1, formula_2 = y2 ~ x1,
+                 data = sim$data, random_1 = "x1",
+                 dependence = "famoye", draws = 200, seed = 99)
+
+  fit_sml <- do.call(fit_rpbnb_tmb, c(common, list(method = "sml")))
+  fit_lap <- do.call(fit_rpbnb_tmb, c(common, list(method = "laplace")))
+
+  expect_true(is.finite(fit_lap$logLik))
+  expect_true(isTRUE(fit_lap$sdreport$pdHess))
+
+  # Same parameter vector, same names, so a direct comparison is meaningful.
+  expect_identical(names(coef(fit_lap)), names(coef(fit_sml)))
+
+  # Agreement judged against sampling noise rather than an absolute tolerance:
+  # these are two approximations to the same integral, not two computations of
+  # the same number.
+  key <- c("b1:x1", "b2:x1")
+  for (nm in key) {
+    tol <- 3 * max(fit_sml$se[[nm]], fit_lap$se[[nm]])
+    expect_lt(abs(coef(fit_sml)[[nm]] - coef(fit_lap)[[nm]]), tol)
+  }
+})
+
+test_that("laplace integrates random effects from both equations simultaneously", {
+  skip_on_cran()
+  n <- 250
+  sim <- simulate_rpbnb_tmb(
+    n = n,
+    beta1 = c("(Intercept)" = 0.3, x1 = 0.3),
+    beta2 = c("(Intercept)" = 0.1, x2 = -0.2),
+    random_1 = list(x1 = list(sd = 0.3)),
+    random_2 = list(x2 = list(sd = 0.25)),
+    dispersion = c(m1 = 0.4, m2 = 0.5),
+    dependence = "famoye", lambda = 0, seed = 41
+  )
+  fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x2, data = sim$data,
+                       random_1 = "x1", random_2 = "x2",
+                       dependence = "famoye",
+                       draws = 50, method = "laplace", keep = "full")
+  # q1 = q2 = 1 (one random slope in each equation). Task 6's acceptance fit
+  # uses four random slopes in each equation, and every test up to this one
+  # exercises random_1 alone (q2 == 0). If only the first equation's latents
+  # reached MakeADFun -- e.g. random_names dropped "u2", or q2 silently
+  # collapsed to 0 -- this would report 250 (n * q1) instead of 500
+  # (n * (q1 + q2)), leaving u2 fixed at zero rather than integrated.
+  expect_identical(length(fit$obj$env$random), as.integer(n * (1L + 1L)))
+  expect_true(is.finite(fit$logLik))
+})
+
+test_that("laplace gives the same answer single- and multi-threaded", {
+  skip_on_cran()
+  sim <- simulate_rpbnb_tmb(
+    n = 300,
+    beta1 = c("(Intercept)" = 0.3, x1 = 0.35),
+    beta2 = c("(Intercept)" = 0.1, x1 = -0.25),
+    random_1 = list(x1 = list(sd = 0.35)),
+    dispersion = c(m1 = 0.4, m2 = 0.5),
+    dependence = "famoye", lambda = 0.1, seed = 31
+  )
+  common <- list(formula_1 = y1 ~ x1, formula_2 = y2 ~ x1,
+                 data = sim$data, random_1 = "x1",
+                 dependence = "famoye", draws = 50, seed = 5,
+                 method = "laplace")
+
+  fit1 <- do.call(fit_rpbnb_tmb, c(common, list(
+    control = rpbnb_tmb_control(n_cores = 1L))))
+  fit4 <- do.call(fit_rpbnb_tmb, c(common, list(
+    control = rpbnb_tmb_control(n_cores = 4L, max_threads = 4L))))
+
+  # Threading partitions the accumulation; it must not change the objective.
+  expect_equal(fit1$logLik, fit4$logLik, tolerance = 1e-6)
+  expect_equal(unname(coef(fit1)), unname(coef(fit4)), tolerance = 1e-4)
+})
