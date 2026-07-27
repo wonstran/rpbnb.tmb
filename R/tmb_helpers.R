@@ -67,11 +67,12 @@
 .check_tmb_workload <- function(n, draws, family_code, max_workload,
                                 n_threads = 1L, parallel_tape = FALSE) {
   if (is.infinite(max_workload)) return(invisible(0))
-  # Weights are measured, not assumed: see TAPE_CALIBRATION and
-  # inst/benchmark_memory.R.  Frank costs ~2.9x Famoye per unit; Gaussian and
-  # Clayton are close to 1; independence is cheaper.  A previous revision
-  # generalised "weight 1" to every family from Famoye and Gaussian
-  # measurements alone, which under-budgeted Frank threefold.
+  # Weights are measured against PEAK working set, not assumed and not taken
+  # from retained tape: see TAPE_CALIBRATION and inst/benchmark_memory.R.
+  # Frank peaks at ~3.5x Famoye per unit; Clayton and Gaussian are near 1;
+  # independence is cheaper.  Two earlier revisions got this wrong -- one
+  # generalised "weight 1" to every family, the other derived the weights from
+  # retained tape while the budget scaled peak.  Both under-budgeted Frank.
   family_weight <- unname(TAPE_CALIBRATION$family_weight[[
     match(family_code, c(-1L, 0L, 1L, 2L, 3L))
   ]])

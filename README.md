@@ -47,30 +47,38 @@ results. Advanced users can opt into concurrent tape construction with
 automatic-differentiation tape is built. Every constant behind it is measured
 by `inst/benchmark_memory.R`, whose raw results are committed to
 `inst/extdata/memory_calibration.csv`; `TAPE_CALIBRATION` in `R/utilities.R` is
-the single source that the guard, the default, and the documentation all derive
-from.
+the single source that the guard, the default, and the generated `?` help all
+derive from. The figures restated on this page and in
+`docs/reference/rpbnb.tmb-reference-manual.html` are *copies*, not derivations
+— both are checked against `TAPE_CALIBRATION` (by `test-parallel.R` and by
+`docs/reference/verify_reference_manual.R` respectively) so a copy that drifts
+fails rather than misleads.
 
 The budget is set on **peak** working set rather than retained tape, because
 peak is what exhausts memory: TMB records the whole likelihood before pruning
-it to each parallel region, so peak runs about 6.1x the retained footprint —
-roughly 12 kB per weighted observation-draw. The default of `7e5` units
-therefore targets about 8 GiB of peak memory for one fit.
+it to each parallel region, so peak runs about 6.1x the retained tape *plus
+first-evaluation growth* — roughly 12 kB per weighted observation-draw,
+measured directly against peak. The default of `7e5` units therefore targets
+about 8 GiB of peak memory for one fit.
 
-Families differ, so each carries a measured weight (the largest ratio to Famoye
-at matched workload):
+Families differ, so each carries a measured weight: the largest **peak** ratio
+to Famoye at matched workload, rounded up to the next tenth. Peak rather than
+retained tape, because peak is the quantity being budgeted — the two disagree
+enough to matter.
 
-| family | weight |
-|---|---|
-| independence | 0.7 |
-| famoye | 1.0 |
-| frank | **2.9** |
-| gaussian | 1.1 |
-| clayton | 1.0 |
+| family | weight | largest peak ratio | largest tape ratio |
+|---|---|---|---|
+| independence | 0.7 | 0.602 | 0.647 |
+| famoye | 1.0 | — | — |
+| frank | **3.6** | 3.530 | 2.867 |
+| gaussian | 0.9 | 0.844 | 0.947 |
+| clayton | 1.1 | 1.079 | 0.921 |
 
-Frank is nearly three times Famoye per unit, so a Frank fit buys proportionally
-fewer draws for the same memory. Raise `max_workload` deliberately against the
-memory you actually have — `inst/fit_rpbnb_diff_copula.R` shows that opt-in —
-and `max_workload = Inf` disables the guard.
+Frank peaks at over three and a half times Famoye per unit, so a Frank fit buys
+proportionally fewer draws for the same memory. Raise `max_workload`
+deliberately against the memory you actually have —
+`inst/fit_rpbnb_diff_copula.R` shows that opt-in — and `max_workload = Inf`
+disables the guard.
 
 ## Boundary-constrained dependence estimates
 

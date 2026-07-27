@@ -21,7 +21,6 @@ Suggests:
     testthat (>= 3.1.5),
     knitr,
     rmarkdown,
-    pbivnorm,
     rpbnb
 Config/testthat/edition: 3
 Roxygen: list(markdown = TRUE)

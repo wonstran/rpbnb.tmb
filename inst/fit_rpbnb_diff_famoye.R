@@ -23,10 +23,12 @@ sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- Settings ---------------------------------------------------------------
 # draws is bounded by memory, not by taste: peak working set runs about
-# 12 kB per observation-draw (see TAPE_CALIBRATION / inst/benchmark_memory.R),
-# so 3874 obs x 200 draws is ~8 GiB peak -- right at the default
-# max_workload. Raise both deliberately if you have the memory.
-n_obs <- 5000L
+# 12 kB per observation-draw (see TAPE_CALIBRATION / inst/benchmark_memory.R).
+# Famoye carries weight 1.0, so this configuration is
+#   1000 obs x 200 draws x 1.0 = 2.0e5 weighted units  (~2.3 GiB peak),
+# comfortably inside the default budget. Raise both deliberately if you have
+# the memory; the whole file is 3874 observations.
+n_obs <- 1000L
 draws <- 200L
 n_cores <- 12 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
@@ -35,7 +37,7 @@ if (is.na(n_cores)) n_cores <- 1L
 data <- read.csv(system.file(
   "extdata", "rwm1984_bnb.csv", package = "rpbnb.tmb", mustWork = TRUE
 ))
-#data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]
+data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]  # comment this line to use all obs
 cat("=== RP-BNB (different formulas, Famoye) on rwm1984 health counts ===\n")
 cat("Observations :", nrow(data), "\n")
 cat("Draws        :", draws, "\n")
@@ -51,6 +53,13 @@ f2 <- hospvis ~ age + educ + outwork + female + self
 cat("Equation 1   :", deparse(f1), "\n")
 cat("Equation 2   :", deparse(f2), "\n\n")
 
+# Expect a "pinned at a boundary" dependence warning here: the docvis/hospvis
+# association in this real dataset is stronger than Famoye/Sarmanov's range
+# can represent (confirmed independent of n_obs and of the z_dep starting
+# value -- lam wants to land around 13 against a box of roughly +/-1 either
+# way). That is a property of this data under this family, not a fitting
+# problem to chase. See fit_rpbnb_diff_copula.R for a dependence family
+# (Frank, unbounded theta) whose range covers an association this strong.
 t_fit <- system.time(
   fit <- fit_rpbnb_tmb(
     formula_1  = f1,
@@ -63,7 +72,12 @@ t_fit <- system.time(
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
-      n_cores     = n_cores
+      n_cores     = n_cores,
+      max_threads = n_cores
+      # The default budgets 80% of detected available memory, which covers the
+      # 2.0e5 weighted units above. To state a budget yourself instead of
+      # hand-computing units, pass e.g.
+      #   max_workload = rpbnb_tmb_max_workload(budget_gib = 32)
     )
   )
 )[["elapsed"]]
@@ -103,5 +117,5 @@ sep(); cat("AVERAGE MARGINAL EFFECTS (AME)\n"); sep()
 rpbnb_tmb_marginal_effects(fit, which = "both")
 
 # ---- 7. Elasticities / semi-elasticities (AME) --------------------------------
-#sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
-#rpbnb_tmb_elasticities(fit, which = "both")
+sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
+rpbnb_tmb_elasticities(fit, which = "both")

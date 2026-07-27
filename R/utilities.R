@@ -13,13 +13,35 @@ POISSON_M <- 1e-6
 #' @noRd
 FRANK_THETA_MAX <- 35
 
+#' Ceiling of the Clayton link, shared with the C++ template
+#'
+#' The template maps the working parameter through
+#' \code{theta = exp(clamp(z_dep, -20, 20))} (\code{src/rpbnb.tmb.cpp}, the
+#' \code{FAM_CLAYTON} branch), so a fitted natural-scale Clayton theta can be
+#' as large as \code{exp(20)}, about 4.9e8. Simulation has to remain accurate
+#' that far up, which is why its conditional inverse works in log space --
+#' the direct \code{u^(-theta)} form overflows around theta = 700.
+#' @keywords internal
+#' @noRd
+CLAYTON_THETA_MAX <- exp(20)
+
 #' Measured tape-memory calibration
 #'
 #' The single source for every number in the `max_workload` safety contract:
 #' the guard reads the family weights from here, `rpbnb_tmb_control()` derives
-#' its default from `budget_gib` and `bytes_per_unit`, and the documentation is
-#' generated from this object by `.calibration_doc()`. Nothing restates these
-#' figures, so the code and the documentation cannot drift apart.
+#' its default from `budget_gib` and `bytes_per_unit`, and the roxygen
+#' documentation is generated from this object by `.calibration_doc()`.
+#'
+#' Two places restate these figures instead of deriving them, and each has its
+#' own check that compares the restatement to this object and fails on drift:
+#'
+#'   * `README.md` -- checked by `tests/testthat/test-parallel.R`
+#'     ("the README's restated calibration figures match the calibration").
+#'   * `docs/reference/rpbnb.tmb-reference-manual.html` -- checked by
+#'     `docs/reference/verify_reference_manual.R`.
+#'
+#' Update a restatement together with the constant, or add the new figure to
+#' the corresponding check. Do not add a third restatement without one.
 #'
 #' Regenerate with `Rscript inst/benchmark_memory.R`, which writes the raw
 #' measurements to `inst/extdata/memory_calibration.csv` and prints the
@@ -34,18 +56,27 @@ TAPE_CALIBRATION <- list(
   tape_intercept_mib = 13.374,
   tape_r_squared = 0.9994,
   # PEAK working set is what actually causes std::bad_alloc -- the failure that
-  # started this guard -- and it runs about 6.1x the retained footprint,
-  # because TMB records the full likelihood before pruning to each region.
-  # The budget is therefore set on peak, not on tape.
+  # started this guard -- and it runs about 6.1x the retained tape PLUS the
+  # growth across one fn()/gr() pair (see peak_over_tape_and_eval below for
+  # why the denominator has to be named precisely), because TMB records the
+  # full likelihood before pruning to each region. The budget is therefore set
+  # on peak, not on tape, and this slope is regressed on peak_mib directly
+  # rather than scaled up from the tape slope.
   peak_bytes_per_unit = 12083,
-  peak_over_retained = 6.11,
+  # Median of peak_mib / (tape_mib + eval_mib) over the grid. The denominator
+  # is retained tape PLUS the further growth across one fn()/gr() pair, not
+  # tape alone -- against tape alone the same data gives 8.78. Named for what
+  # it actually divides by, because the two are far enough apart to mislead.
+  peak_over_tape_and_eval = 6.11,
   budget_gib = 8,
-  # Conservative: the largest ratio to Famoye observed at matched workload.
-  # Frank really is ~2.9x -- a weight-1 assumption for it would under-budget
-  # by nearly threefold.
+  # The largest PEAK ratio to Famoye observed at matched workload, rounded up
+  # to the next tenth. Peak, not retained tape: peak is the quantity this
+  # guard budgets, and the two disagree materially. Frank retains 2.87x Famoye
+  # but peaks at 3.53x, so tape-derived weights under-budgeted Frank's peak by
+  # about 22%. Famoye is the numeraire and is fixed at 1.
   family_weight = c(
-    independence = 0.7, famoye = 1.0, frank = 2.9,
-    gaussian = 1.1, clayton = 1.0
+    independence = 0.7, famoye = 1.0, frank = 3.6,
+    gaussian = 0.9, clayton = 1.1
   ),
   measured_families = c(
     "independence", "famoye", "frank", "gaussian", "clayton"
@@ -80,17 +111,20 @@ TAPE_CALIBRATION <- list(
     "The budget is set on \\emph{peak} working set, not on retained tape, ",
     "because peak is what exhausts memory: TMB records the whole likelihood ",
     "before pruning it to each parallel region, so peak runs about ",
-    calibration$peak_over_retained, " times the retained footprint, or ",
-    calibration$peak_bytes_per_unit, " bytes per unit. The default of ",
+    calibration$peak_over_tape_and_eval,
+    " times the retained tape plus first-evaluation growth, or ",
+    calibration$peak_bytes_per_unit,
+    " bytes per unit measured directly against peak. The default of ",
     format(.calibration_default_workload(calibration),
            scientific = FALSE, big.mark = ","),
     " units therefore targets a peak of about ", calibration$budget_gib,
     " GiB for one fit.\n\n",
     "Families cost different amounts per unit, so each carries a weight -- ",
-    "the largest ratio to Famoye observed at matched workload: ",
+    "the largest \\emph{peak} ratio to Famoye observed at matched workload, ",
+    "rounded up to the next tenth: ",
     paste(sprintf("%s %g", names(weights), weights), collapse = ", "),
-    ". Frank is nearly three times Famoye, so treating it as unweighted would ",
-    "under-budget it threefold.\n\n",
+    ". Frank peaks at over three and a half times Famoye, so treating it as ",
+    "unweighted would under-budget it more than threefold.\n\n",
     "Raise \\code{max_workload} deliberately against the memory you actually ",
     "have, not to make one particular dataset fit.\n\n",
     "As of \\code{rpbnb_tmb_max_workload()}, the value \\code{rpbnb_tmb_control()} ",
@@ -205,6 +239,37 @@ TAPE_CALIBRATION <- list(
 #' @keywords internal
 #' @noRd
 .detect_available_memory_gib_windows <- function() {
+  gib <- .detect_available_memory_gib_windows_powershell()
+  if (!is.na(gib)) return(gib)
+  .detect_available_memory_gib_windows_wmic()
+}
+
+# PowerShell's CIM cmdlets have been available since Windows 8 / Server 2012
+# and, unlike wmic.exe, are not deprecated -- Windows 11 24H2 removed wmic.exe
+# from the default install entirely, which left this detector permanently
+# blind on current systems. Tried first for that reason; wmic below is kept
+# only as a fallback for older or stripped-down environments.
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_windows_powershell <- function() {
+  out <- tryCatch(
+    system2(
+      "powershell",
+      c("-NoProfile", "-Command",
+        "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"),
+      stdout = TRUE, stderr = FALSE
+    ),
+    error = function(e) character(0)
+  )
+  if (!length(out)) return(NA_real_)
+  value_kib <- suppressWarnings(as.numeric(trimws(out[1L])))
+  if (is.na(value_kib)) return(NA_real_)
+  value_kib / 1024^2
+}
+
+#' @keywords internal
+#' @noRd
+.detect_available_memory_gib_windows_wmic <- function() {
   out <- tryCatch(
     system2("wmic", c("OS", "get", "FreePhysicalMemory", "/value"),
             stdout = TRUE, stderr = FALSE),
@@ -308,12 +373,38 @@ rpbnb_tmb_max_workload <- function(budget_gib = NULL, fraction = 0.8) {
   ok <- stats::complete.cases(data[, vars, drop = FALSE])
   if (!any(ok)) stop("No complete cases.")
   data_cc <- data[ok, , drop = FALSE]
-  mf1 <- stats::model.frame(formula_1, data = data_cc)
-  mf2 <- stats::model.frame(formula_2, data = data_cc)
+  # Both equations must be built from ONE row mask. Completeness of the raw
+  # variables is not enough: a transformation in the formula can manufacture
+  # NA/NaN in one equation only (`log(x)` with a non-positive x), and letting
+  # each model.frame() drop its own rows silently pairs equation 1's
+  # observation i with equation 2's observation j. The template takes n from
+  # Y1 alone and indexes Y2/X2 with it, so nothing downstream would catch it.
+  # Evaluate both frames with na.pass, intersect the surviving rows, then
+  # rebuild on that shared subset so the terms attributes stay intact.
+  mf1 <- stats::model.frame(formula_1, data = data_cc,
+                            na.action = stats::na.pass)
+  mf2 <- stats::model.frame(formula_2, data = data_cc,
+                            na.action = stats::na.pass)
+  shared <- stats::complete.cases(mf1) & stats::complete.cases(mf2)
+  if (!any(shared)) stop("No complete cases.")
+  if (!all(shared)) {
+    data_cc <- data_cc[shared, , drop = FALSE]
+    mf1 <- stats::model.frame(formula_1, data = data_cc,
+                              na.action = stats::na.pass)
+    mf2 <- stats::model.frame(formula_2, data = data_cc,
+                              na.action = stats::na.pass)
+  }
   Y1 <- .check_counts(stats::model.response(mf1), "1")
   Y2 <- .check_counts(stats::model.response(mf2), "2")
   X1 <- stats::model.matrix(formula_1, mf1)
   X2 <- stats::model.matrix(formula_2, mf2)
+  # Cheap, and the failure it guards against is silent misalignment rather
+  # than an error, so assert rather than trust the construction above.
+  if (length(Y1) != length(Y2) || nrow(X1) != nrow(X2) ||
+      length(Y1) != nrow(X1) || length(Y1) != nrow(data_cc)) {
+    stop("The two equations resolved to different numbers of rows; this is ",
+         "an internal error in row alignment.", call. = FALSE)
+  }
   model_meta <- list(
     eq1 = list(
       terms = stats::delete.response(stats::terms(mf1)),
@@ -504,14 +595,19 @@ lambda_bounds_vec <- function(c1, c2) {
 #' Specify a copula dependence model
 #'
 #' Creates a copula specification for \code{fit_rpbnb_tmb()} or
-#' \code{simulate_rpbnb_tmb()}. If \code{par} is omitted during fitting, the
-#' dependence parameter is estimated. Simulation uses independence when it is
-#' omitted.
+#' \code{simulate_rpbnb_tmb()}.
+#'
+#' \code{par} is a \strong{simulation-only} argument. \code{fit_rpbnb_tmb()}
+#' always estimates the dependence parameter and reads only \code{family}, so
+#' it rejects a non-\code{NULL} \code{par} rather than accepting and ignoring
+#' it; use \code{start} there to set a working-scale starting value.
+#' \code{simulate_rpbnb_tmb()} uses independence when \code{par} is omitted.
 #'
 #' @param family Copula family: \code{"frank"}, \code{"normal"} (Gaussian), or
 #'   \code{"kimeldorf"} (Clayton).
-#' @param par Optional natural-scale dependence parameter: Frank theta,
-#'   Gaussian correlation rho, or positive Clayton theta.
+#' @param par Optional natural-scale dependence parameter for
+#'   \emph{simulation}: Frank theta, Gaussian correlation rho, or positive
+#'   Clayton theta. Not accepted by \code{fit_rpbnb_tmb()}.
 #' @return An object of class \code{rpbnb_copula}.
 #' @export
 copula <- function(family, par = NULL) {

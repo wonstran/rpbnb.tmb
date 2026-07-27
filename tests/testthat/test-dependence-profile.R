@@ -1,3 +1,17 @@
+# RUNTIME: this is the slowest file in the suite -- about 6.2 minutes for 59
+# assertions on a 2026-era laptop (R 4.5.1, TMB 1.9.21, Windows), against ~12
+# seconds for the next slowest. TMB::tmbprofile() refits the model at every
+# point along the profile grid, and no amount of fixture sharing removes that.
+#
+# It is SLOW, NOT HUNG. Recorded here because that has now cost two reviewers
+# real time: one abandoned a run at ~23 minutes, another timed out at 2 and
+# then at 6 minutes -- the second missing completion by about twelve seconds
+# and reporting the result as inconclusive rather than passing. Budget 10+
+# minutes, or run it with a filter and no wall-clock limit.
+#
+# If you are shortening the feedback loop, `devtools::test(filter = "...")`
+# on any other file returns in seconds; leave this one to a full run.
+
 test_that("the shared dependence link reproduces the reported natural values", {
   z <- 0.37
   lo <- -0.4

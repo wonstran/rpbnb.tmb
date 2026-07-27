@@ -19,8 +19,11 @@
 #   tape_mib   retained resident-set growth across TMB::MakeADFun()
 #   eval_mib   further retained growth across one obj$fn() and one obj$gr()
 #   peak_mib   peak working set over the whole sequence, above baseline
-# `peak_mib` is the quantity that governs out-of-memory failures; `tape_mib` is
-# the quantity `max_workload` is calibrated against.
+# `peak_mib` governs out-of-memory failures, and it is what `max_workload` is
+# calibrated against -- both the per-unit budget AND the family weights.
+# `tape_mib` is reported for diagnosis only; do not derive guard constants from
+# it. Frank retains 2.87x Famoye but peaks at 3.53x, and an earlier revision
+# that took the weights from `tape_mib` under-budgeted Frank's peak by ~22%.
 
 suppressMessages({
   library(rpbnb.tmb)
@@ -150,34 +153,69 @@ dir.create(dirname(out), showWarnings = FALSE, recursive = TRUE)
 utils::write.csv(results, out, row.names = FALSE)
 message("wrote ", out)
 
-# ---- Regression the published constants come from --------------------------
+# ---- Regressions the published constants come from -------------------------
+# Every constant in TAPE_CALIBRATION must be printed below, marked as such, so
+# a constant can be re-derived by re-running this script rather than trusted.
 famoye <- subset(results, family_code == 0L)
-per_units <- aggregate(tape_mib ~ units, famoye, mean)
-model <- lm(tape_mib ~ units, per_units)
+per_units <- aggregate(cbind(tape_mib, peak_mib) ~ units, famoye, mean)
 top <- utils::tail(per_units[order(per_units$units), ], 3L)
-top_slope <- coef(lm(tape_mib ~ units, top))[["units"]]
 
-cat("\n-- Famoye tape model -------------------------------------------\n")
-cat(sprintf("tape_mib = %.3f + %.8g * units      R^2 = %.5f\n",
-            coef(model)[[1L]], coef(model)[[2L]], summary(model)$r.squared))
-cat(sprintf("overall slope        : %.0f bytes/unit\n",
-            coef(model)[[2L]] * 1024^2))
-cat(sprintf("large-workload slope : %.0f bytes/unit  (the published figure)\n",
-            top_slope * 1024^2))
+report_slope <- function(what, column) {
+  model <- lm(per_units[[column]] ~ per_units$units)
+  top_slope <- coef(lm(top[[column]] ~ top$units))[[2L]]
+  cat(sprintf("%s_mib = %.3f + %.8g * units      R^2 = %.5f\n",
+              what, coef(model)[[1L]], coef(model)[[2L]],
+              summary(model)$r.squared))
+  cat(sprintf("  overall slope        : %.0f bytes/unit\n",
+              coef(model)[[2L]] * 1024^2))
+  cat(sprintf("  large-workload slope : %.0f bytes/unit  <- published %s\n",
+              top_slope * 1024^2,
+              if (what == "peak") "peak_bytes_per_unit" else
+                "tape_bytes_per_unit"))
+  invisible(NULL)
+}
 
+cat("\n-- Famoye peak model (what max_workload budgets) ---------------\n")
+report_slope("peak", "peak_mib")
+cat("\n-- Famoye tape model (diagnostic only) -------------------------\n")
+report_slope("tape", "tape_mib")
+
+# Both ratios are printed because the guard was once calibrated on the wrong
+# one. The PEAK column is the one family_weight comes from.
 cat("\n-- Family cost relative to Famoye at matched workload ----------\n")
 matched <- subset(results, units %in% subset(results, family_code != 0L)$units)
 for (u in sort(unique(matched$units))) {
-  base <- mean(subset(matched, units == u & family_code == 0L)$tape_mib)
+  base_tape <- mean(subset(matched, units == u & family_code == 0L)$tape_mib)
+  base_peak <- mean(subset(matched, units == u & family_code == 0L)$peak_mib)
   for (fc in sort(unique(subset(matched, family_code != 0L)$family_code))) {
     cell <- subset(matched, units == u & family_code == fc)
-    if (!nrow(cell) || !is.finite(base)) next
-    cat(sprintf("units=%7.0f  %-13s %7.2f MiB  ratio to famoye = %.2f\n",
-                u, cell$family[1L], mean(cell$tape_mib),
-                mean(cell$tape_mib) / base))
+    if (!nrow(cell) || !is.finite(base_peak)) next
+    cat(sprintf(
+      "units=%7.0f  %-13s peak %8.2f MiB  peak ratio = %.3f   (tape %.3f)\n",
+      u, cell$family[1L], mean(cell$peak_mib),
+      mean(cell$peak_mib) / base_peak, mean(cell$tape_mib) / base_tape
+    ))
   }
 }
 
+cat("\n-- Published family_weight = ceiling(max peak ratio, 0.1) ------\n")
+for (fc in sort(unique(subset(matched, family_code != 0L)$family_code))) {
+  cells <- subset(matched, family_code == fc)
+  ratios <- vapply(seq_len(nrow(cells)), function(i) {
+    base <- mean(subset(matched, units == cells$units[i] &
+                          family_code == 0L)$peak_mib)
+    cells$peak_mib[i] / base
+  }, numeric(1))
+  cat(sprintf("%-13s max peak ratio = %.3f  ->  weight %.1f\n",
+              cells$family[1L], max(ratios),
+              ceiling(max(ratios) * 10) / 10))
+}
+
 cat("\n-- Peak vs retained -------------------------------------------\n")
-cat(sprintf("peak / (tape + eval), median over the grid: %.2f\n",
-            median(results$peak_mib / (results$tape_mib + results$eval_mib))))
+# Name the denominator: against tape alone this ratio is far larger, and
+# calling either one "the retained footprint" has misled before.
+cat(sprintf("peak / (tape + eval), median: %.2f  <- published %s\n",
+            median(results$peak_mib / (results$tape_mib + results$eval_mib)),
+            "peak_over_tape_and_eval"))
+cat(sprintf("peak / tape        , median: %.2f  (not published)\n",
+            median(results$peak_mib / results$tape_mib)))

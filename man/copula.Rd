@@ -10,15 +10,21 @@ copula(family, par = NULL)
 \item{family}{Copula family: \code{"frank"}, \code{"normal"} (Gaussian), or
 \code{"kimeldorf"} (Clayton).}
 
-\item{par}{Optional natural-scale dependence parameter: Frank theta,
-Gaussian correlation rho, or positive Clayton theta.}
+\item{par}{Optional natural-scale dependence parameter for
+\emph{simulation}: Frank theta, Gaussian correlation rho, or positive
+Clayton theta. Not accepted by \code{fit_rpbnb_tmb()}.}
 }
 \value{
 An object of class \code{rpbnb_copula}.
 }
 \description{
 Creates a copula specification for \code{fit_rpbnb_tmb()} or
-\code{simulate_rpbnb_tmb()}. If \code{par} is omitted during fitting, the
-dependence parameter is estimated. Simulation uses independence when it is
-omitted.
+\code{simulate_rpbnb_tmb()}.
+}
+\details{
+\code{par} is a \strong{simulation-only} argument. \code{fit_rpbnb_tmb()}
+always estimates the dependence parameter and reads only \code{family}, so
+it rejects a non-\code{NULL} \code{par} rather than accepting and ignoring
+it; use \code{start} there to set a working-scale starting value.
+\code{simulate_rpbnb_tmb()} uses independence when \code{par} is omitted.
 }

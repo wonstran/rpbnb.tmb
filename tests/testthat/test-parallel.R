@@ -246,7 +246,7 @@ test_that("the documentation is generated from the calibration", {
                            scientific = FALSE, big.mark = ","), fixed = TRUE)
   expect_match(doc, "rpbnb_tmb_max_workload", fixed = TRUE)
   expect_match(doc, "auto-detect", fixed = TRUE)
-  expect_match(doc, "frank 2.9", fixed = TRUE)
+  expect_match(doc, "frank 3.6", fixed = TRUE)
   # Every family the guard can be asked about must be a measured one.
   expect_setequal(
     names(TAPE_CALIBRATION$family_weight), TAPE_CALIBRATION$measured_families
@@ -264,17 +264,88 @@ test_that("the committed calibration data backs the published constants", {
     sort(unique(raw$family)), sort(TAPE_CALIBRATION$measured_families)
   )
   # And the published weights are no smaller than the observed ratios.
-  famoye <- aggregate(tape_mib ~ units, subset(raw, family == "famoye"), mean)
+  # PEAK, not tape: the guard budgets peak working set, so weights validated
+  # against retained tape would not be validated against the thing they scale.
+  # The two differ enough to matter -- Frank retains 2.87x Famoye but peaks at
+  # 3.53x, which is exactly how a tape-derived 2.9 came to under-budget it.
+  famoye <- aggregate(peak_mib ~ units, subset(raw, family == "famoye"), mean)
   for (fam in setdiff(unique(raw$family), "famoye")) {
     cells <- subset(raw, family == fam)
     ratios <- vapply(seq_len(nrow(cells)), function(i) {
-      base <- famoye$tape_mib[famoye$units == cells$units[i]]
-      if (length(base)) cells$tape_mib[i] / base else NA_real_
+      base <- famoye$peak_mib[famoye$units == cells$units[i]]
+      if (length(base)) cells$peak_mib[i] / base else NA_real_
     }, numeric(1))
     expect_gte(
       TAPE_CALIBRATION$family_weight[[fam]], max(ratios, na.rm = TRUE) - 1e-8
     )
   }
+})
+
+test_that("the README's restated calibration figures match the calibration", {
+  # README.md hand-copies the weights, the per-unit slope, the default
+  # workload and the budget. Nothing read it, so changing its Frank weight to
+  # 9.9 left every test and the manual verifier green -- the same class of
+  # silent drift the reference-manual verifier was extended to catch.
+  readme <- testthat::test_path("..", "..", "README.md")
+  skip_if_not(file.exists(readme), "README.md not available (installed pkg)")
+  text <- paste(readLines(readme, warn = FALSE), collapse = "\n")
+
+  # Compare NUMBERS, not formatted strings: the README writes `7e5` where
+  # format() gives "7e+05", and `1.0` where format() gives "1". A string
+  # comparison fails on those without any drift having occurred.
+  extract <- function(pattern) {
+    hit <- regmatches(text, regexpr(pattern, text, perl = TRUE))
+    expect_length(hit, 1L)
+    as.numeric(hit)
+  }
+
+  # Weights, from the table row: | frank | **3.6** | 3.530 | 2.867 |
+  for (fam in names(TAPE_CALIBRATION$family_weight)) {
+    row <- regmatches(
+      text, regexpr(paste0("\\|\\s*", fam, "\\s*\\|[^|]*\\|"), text)
+    )
+    expect_length(row, 1L)
+    expect_equal(as.numeric(gsub("[^0-9.]", "", row)),
+                 TAPE_CALIBRATION$family_weight[[fam]],
+                 info = paste("README weight for", fam))
+  }
+
+  expect_equal(extract("(?<=The default of `)[^`]+(?=` units)"),
+               .calibration_default_workload())
+  expect_equal(extract("(?<=about )[0-9.]+(?= GiB of peak memory)"),
+               TAPE_CALIBRATION$budget_gib)
+  # Prose rounds the ratio to one decimal, so compare at that precision.
+  expect_equal(extract("(?<=about )[0-9.]+(?=x the retained tape)"),
+               TAPE_CALIBRATION$peak_over_tape_and_eval, tolerance = 0.02)
+})
+
+test_that("the peak calibration constants are reproducible from the data", {
+  # peak_bytes_per_unit scales every budget the guard enforces, so it must be
+  # recoverable from the committed measurements rather than asserted. Same
+  # large-workload slope the tape figure uses, applied to peak_mib.
+  path <- system.file("extdata", "memory_calibration.csv",
+                      package = "rpbnb.tmb")
+  skip_if(path == "", "calibration data not installed")
+  raw <- utils::read.csv(path)
+  famoye <- aggregate(cbind(tape_mib, peak_mib) ~ units,
+                      subset(raw, family == "famoye"), mean)
+  top <- utils::tail(famoye[order(famoye$units), ], 3L)
+
+  peak_slope <- coef(stats::lm(peak_mib ~ units, top))[["units"]] * 1024^2
+  expect_equal(TAPE_CALIBRATION$peak_bytes_per_unit, peak_slope,
+               tolerance = 0.02)
+
+  tape_slope <- coef(stats::lm(tape_mib ~ units, top))[["units"]] * 1024^2
+  expect_equal(TAPE_CALIBRATION$tape_bytes_per_unit, tape_slope,
+               tolerance = 0.02)
+
+  # The published ratio divides by tape + eval; naming it "retained" alone
+  # would be off by more than 40%.
+  expect_equal(
+    TAPE_CALIBRATION$peak_over_tape_and_eval,
+    median(raw$peak_mib / (raw$tape_mib + raw$eval_mib)),
+    tolerance = 0.01
+  )
 })
 
 test_that("TMB thread configuration realizes a valid request", {

@@ -39,6 +39,29 @@ for (fun in exports) {
   }
 }
 
+# The manual restates the memory-calibration weights rather than generating
+# them, so it can drift from TAPE_CALIBRATION silently -- it already had,
+# carrying tape-derived weights after the guard moved to peak. Exported-symbol
+# coverage would never have caught that. Compare the numbers themselves.
+cal_env <- new.env(parent = baseenv())
+sys.source("R/utilities.R", envir = cal_env)
+calibration <- cal_env$TAPE_CALIBRATION
+manual_labels <- c(independence = "independence", frank = "Frank",
+                   gaussian = "Gaussian", clayton = "Clayton")
+for (fam in names(manual_labels)) {
+  weight <- calibration$family_weight[[fam]]
+  expected <- paste0(manual_labels[[fam]], " <code>", format(weight), "</code>")
+  if (!grepl(expected, html, fixed = TRUE)) {
+    stop("Manual restates a stale or missing family weight; expected \"",
+         expected, "\" from TAPE_CALIBRATION$family_weight.")
+  }
+}
+budget <- paste0("about ", calibration$budget_gib, " GiB")
+if (!grepl(budget, html, fixed = TRUE)) {
+  stop("Manual does not restate TAPE_CALIBRATION$budget_gib as \"",
+       budget, "\".")
+}
+
 examples <- c(
   'sim <- simulate_rpbnb_tmb(n = 20,',
   'ctrl <- rpbnb_tmb_control(n_cores = 1L)',

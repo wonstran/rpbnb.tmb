@@ -11,3 +11,4 @@
 ^LICENSE\.md$
 ^\.\.Rcheck$
 ^.*\.tar\.gz$
+^\.claude$
