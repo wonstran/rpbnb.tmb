@@ -143,10 +143,17 @@ test_that("laplace and sml agree on data simulated from the true process", {
   # Same parameter vector, same names, so a direct comparison is meaningful.
   expect_identical(names(coef(fit_lap)), names(coef(fit_sml)))
 
+  expect_identical(fit_sml$optimizer$convergence, 0L)
+  expect_identical(fit_lap$optimizer$convergence, 0L)
+
   # Agreement judged against sampling noise rather than an absolute tolerance:
   # these are two approximations to the same integral, not two computations of
   # the same number.
-  key <- c("b1:x1", "b2:x1")
+  # log_sd1:x1 is included deliberately: it is the parameter that most
+  # directly reflects correctness of the random-effect integration (Jacobian,
+  # standard-normal prior, latent-to-deviation scale). b2:x1 belongs to an
+  # equation with no random effect and barely discriminates on its own.
+  key <- c("b1:x1", "b2:x1", "log_sd1:x1")
   for (nm in key) {
     tol <- 3 * max(fit_sml$se[[nm]], fit_lap$se[[nm]])
     expect_lt(abs(coef(fit_sml)[[nm]] - coef(fit_lap)[[nm]]), tol)
@@ -198,6 +205,10 @@ test_that("laplace gives the same answer single- and multi-threaded", {
     control = rpbnb_tmb_control(n_cores = 1L))))
   fit4 <- do.call(fit_rpbnb_tmb, c(common, list(
     control = rpbnb_tmb_control(n_cores = 4L, max_threads = 4L))))
+
+  # Without this the test is a tautology: if OpenMP is unavailable, fit4 runs
+  # single-threaded and the comparisons below compare a fit to itself.
+  expect_gt(fit4$parallel$realized, 1L)
 
   # Threading partitions the accumulation; it must not change the objective.
   expect_equal(fit1$logLik, fit4$logLik, tolerance = 1e-6)
