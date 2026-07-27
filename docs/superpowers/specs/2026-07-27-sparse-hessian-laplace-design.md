@@ -122,9 +122,16 @@ Validation under `method = "laplace"`:
 
 - any `dist1` or `dist2` code outside `{0, 1}` (normal, lognormal) is an error naming the offending
   distribution and directing the user to `method = "sml"`;
-- `total_rand == 0` is an error, since there is nothing to integrate;
-- a `draws` value supplied by the user warns that it is ignored. Detection uses `missing(draws)`,
-  so the default never warns.
+- `total_rand == 0` is an error, since there is nothing to integrate.
+
+`draws` is **not** rejected or ignored under Laplace, and no warning is emitted. It stops driving
+tape size, which is the entire point of the feature, but it retains two R-side roles that are
+unchanged by the estimator: it sets the number of Halton points used to compute the frozen Famoye
+lambda bounds at the starting values, and it sizes the `rp_meta$Z1` / `rp_meta$Z2` grids that
+`predict()` and the marginal-effect functions average over post-estimation
+(`R/methods.R:252`, `R/marginal_effects.R:169`). Both are R-side matrices of size `draws x q` and
+cost nothing. Documenting this dual role is clearer than warning about an argument that still does
+something.
 
 ### Object construction
 
@@ -145,8 +152,11 @@ Under Laplace, `.make_rpbnb_tmb_object()` is called with `random = c("u1", "u2")
 whose dimension is zero. The `random` argument already exists at `R/tmb_helpers.R:45` and is
 currently always `NULL`; this is the first caller to use it.
 
-`Z1` and `Z2` become 1 x q dummy matrices under Laplace and no Halton sequence is generated, so
-`control$halton_burn` and `seed` have no effect on that path.
+Halton generation at `R/fit_rpbnb_tmb.R:158` is unchanged under both estimators, because the
+resulting `Z1` / `Z2` still feed the Famoye lambda-bound loop and `rp_meta`. What changes is only
+what reaches the template: under Laplace, `.build_tmb_data()` receives 1 x q dummy matrices in place
+of the real draws, so the C++ side never sees a draw dimension. `seed` and `control$halton_burn`
+therefore keep their existing meaning for bounds and post-estimation averaging.
 
 ### Guardrails
 
@@ -205,8 +215,8 @@ estimates must agree within a few standard errors. This is the test that decides
 is usable, and it is written before the truck script is attempted.
 
 **Error paths.** Uniform or triangular distribution with `method = "laplace"` errors; no random
-coefficients with `method = "laplace"` errors; explicitly supplied `draws` with
-`method = "laplace"` warns.
+coefficients with `method = "laplace"` errors. A Laplace fit with an explicit `draws` value emits no
+warning and still populates `rp_meta$Z1` with that many rows, so `predict()` works normally.
 
 **Acceptance.** `inst/truck_rpbnb_diff_famoye_laplace.R`, a clone of the dense script with
 `method = "laplace"`, completes on this machine and reports a positive-definite Hessian. This is the
@@ -233,6 +243,7 @@ family dispatch into a function template rather than reverting the design.
 
 Roxygen for the new `method` argument states plainly that SML and Laplace are different
 approximations to the same integral, that they agree asymptotically but need not agree closely on a
-given dataset, and that Laplace removes the `draws` dimension from the memory cost. The README memory
-section names Laplace as the answer for large `n` rather than only describing thread and workload
-tuning.
+given dataset, and that Laplace removes the `draws` dimension from the memory cost. The `draws`
+roxygen entry gains a sentence naming its residual Laplace roles (Famoye bounds, post-estimation
+averaging) so no user concludes it is inert. The README memory section names Laplace as the answer
+for large `n` rather than only describing thread and workload tuning.
