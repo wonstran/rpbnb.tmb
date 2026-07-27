@@ -239,7 +239,9 @@ Type objective_function<Type>::operator() () {
   int q1 = rand_idx1.size();
   int q2 = rand_idx2.size();
   int R = (q1 + q2 > 0) ? Z1.rows() : 1;
-  (void)u1; (void)u2; (void)est_method;
+  // Laplace evaluates the conditional density once at the current latent
+  // values; there is no draw dimension to average over.
+  if (est_method == 1) R = 1;
   int openmp_compiled = 0;
 #ifdef _OPENMP
   openmp_compiled = 1;
@@ -343,18 +345,20 @@ Type objective_function<Type>::operator() () {
   // Precompute parameter-dependent deviations once per simulation draw.  The
   // matrices are read-only while observation contributions are accumulated.
   matrix<Type> dev1(R, q1), dev2(R, q2);
-  for (int r = 0; r < R; r++) {
-    for (int j = 0; j < q1; j++) {
-      Type base = u_to_base(Z1(r, j), dist1(j));
-      int col = rand_idx1(j);
-      dev1(r, j) = compute_dev(beta1(col), sd1(j), base,
-                               dist1(j), sign1(j));
-    }
-    for (int j = 0; j < q2; j++) {
-      Type base = u_to_base(Z2(r, j), dist2(j));
-      int col = rand_idx2(j);
-      dev2(r, j) = compute_dev(beta2(col), sd2(j), base,
-                               dist2(j), sign2(j));
+  if (est_method == 0) {
+    for (int r = 0; r < R; r++) {
+      for (int j = 0; j < q1; j++) {
+        Type base = u_to_base(Z1(r, j), dist1(j));
+        int col = rand_idx1(j);
+        dev1(r, j) = compute_dev(beta1(col), sd1(j), base,
+                                 dist1(j), sign1(j));
+      }
+      for (int j = 0; j < q2; j++) {
+        Type base = u_to_base(Z2(r, j), dist2(j));
+        int col = rand_idx2(j);
+        dev2(r, j) = compute_dev(beta2(col), sd2(j), base,
+                                 dist2(j), sign2(j));
+      }
     }
   }
 
@@ -370,10 +374,21 @@ Type objective_function<Type>::operator() () {
       Type eta1 = xb1(i);
       Type eta2 = xb2(i);
       for (int j = 0; j < q1; j++) {
-        eta1 += X1(i, rand_idx1(j)) * dev1(r, j);
+        int col = rand_idx1(j);
+        // u_to_base() is deliberately NOT applied to the latent: it maps a
+        // uniform draw to a standard-normal base, and the latent already IS
+        // that base.
+        Type d = (est_method == 1)
+          ? compute_dev(beta1(col), sd1(j), u1(i, j), dist1(j), sign1(j))
+          : dev1(r, j);
+        eta1 += X1(i, col) * d;
       }
       for (int j = 0; j < q2; j++) {
-        eta2 += X2(i, rand_idx2(j)) * dev2(r, j);
+        int col = rand_idx2(j);
+        Type d = (est_method == 1)
+          ? compute_dev(beta2(col), sd2(j), u2(i, j), dist2(j), sign2(j))
+          : dev2(r, j);
+        eta2 += X2(i, col) * d;
       }
 
       Type mu1 = exp(clamp_ad(eta1, eta_floor1,
@@ -510,17 +525,25 @@ Type objective_function<Type>::operator() () {
       }
     }
 
-    Type max_log = log_draw(0);
-    for (int r = 1; r < R; r++) {
-      max_log = CppAD::CondExpGt(log_draw(r), max_log,
-                                 log_draw(r), max_log);
+    if (est_method == 1) {
+      nll -= log_draw(0);
+      for (int j = 0; j < q1; j++)
+        nll -= dnorm(u1(i, j), Type(0), Type(1), true);
+      for (int j = 0; j < q2; j++)
+        nll -= dnorm(u2(i, j), Type(0), Type(1), true);
+    } else {
+      Type max_log = log_draw(0);
+      for (int r = 1; r < R; r++) {
+        max_log = CppAD::CondExpGt(log_draw(r), max_log,
+                                   log_draw(r), max_log);
+      }
+      Type scaled_sum = Type(0);
+      for (int r = 0; r < R; r++) {
+        scaled_sum += exp(log_draw(r) - max_log);
+      }
+      Type log_contribution = max_log + log(scaled_sum) - logR;
+      nll -= log_contribution;
     }
-    Type scaled_sum = Type(0);
-    for (int r = 0; r < R; r++) {
-      scaled_sum += exp(log_draw(r) - max_log);
-    }
-    Type log_contribution = max_log + log(scaled_sum) - logR;
-    nll -= log_contribution;
   }
 
   // ---- REPORT derived parameters for sdreport ----
