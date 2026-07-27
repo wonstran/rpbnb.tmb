@@ -155,9 +155,13 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     }
   }
   # Laplace tapes one conditional evaluation per observation, so the draw
-  # dimension is genuinely absent from the quantity the guard bounds.
+  # dimension is genuinely absent.  It is not free, though: the cost that
+  # replaces it is the latent dimension n * (q1 + q2), which sizes the random
+  # -effect vector and its sparse Hessian.  Budgeting `1L` here would leave
+  # max_workload bounding nothing at all on the very path introduced to solve
+  # a memory problem, so the multiplier is the per-observation latent count.
   effective_draws <- if (identical(method, "laplace")) {
-    1L
+    total_rand
   } else if (total_rand > 0L) {
     draws
   } else {

@@ -160,10 +160,16 @@ therefore keep their existing meaning for bounds and post-estimation averaging.
 
 ### Guardrails
 
-`.check_tmb_workload()` is called with `draws = 1L` under Laplace. The tape genuinely is O(n), so
-the guard measures the right quantity rather than being disabled. The truck workload evaluates to
-12,083 x 1 x 1 = 1.2e4 against a default `max_workload` of 2e6, which passes without the caller
-needing to override anything.
+`.check_tmb_workload()` is called with `draws = total_rand` under Laplace, not `draws = 1L`. The draw
+dimension is genuinely absent from the tape, but it is not replaced by nothing: the cost that takes
+its place is the latent dimension `n * (q1 + q2)`, which sizes the random-effect vector and its
+sparse Hessian. Budgeting `1L` would leave `max_workload` bounding essentially nothing on the very
+path introduced to solve a memory problem. The truck workload evaluates to 12,083 x 8 = 96,664
+against a default `max_workload` of 9e5, so it passes with roughly nine times headroom and without
+the caller needing the override the SML demo script carries.
+
+(Revised during implementation, from an original `draws = 1L`, after review observed that the
+original made the guard vacuous on the Laplace path.)
 
 `.configure_tmb_threads()` is unchanged, including the `parallel_tape = FALSE` default that keeps
 tape construction sequential.
