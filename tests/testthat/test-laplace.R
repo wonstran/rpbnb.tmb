@@ -186,8 +186,81 @@ test_that("laplace integrates random effects from both equations simultaneously"
   expect_true(is.finite(fit$logLik))
 })
 
+test_that("sml and laplace degrade together on 8 random slopes, not just 1", {
+  skip_on_cran()
+  # A review of this branch flagged that the accuracy evidence for Laplace
+  # used ONE latent per observation, while the truck acceptance fit uses
+  # EIGHT (4 random slopes per equation), and asked whether Laplace might
+  # specifically flatten log_sd in that many-latent regime -- i.e. whether
+  # the two estimators would disagree once there are enough random slopes for
+  # a per-observation sparse-Hessian approximation to behave differently from
+  # averaging over Halton draws.
+  #
+  # They do not disagree: both estimators locate the same scales, and both
+  # collapse on x4 (whose true sd, 0.30, is the smallest of the four and is
+  # the least identified from n = 600 observations). That collapse is a
+  # property of the likelihood/data, not a flaw of either approximation, so
+  # this test's job is to show agreement despite it, and the minimum-headroom
+  # assertion below exists so the test cannot pass merely because every
+  # tolerance is enormous.
+  sim <- simulate_rpbnb_tmb(
+    n = 600,
+    beta1 = c("(Intercept)" = 0.5, x1 = 0.30, x2 = -0.25, x3 = 0.20, x4 = 0.15),
+    beta2 = c("(Intercept)" = 0.3, x1 = -0.20, x2 = 0.25, x3 = -0.15, x4 = 0.20),
+    random_1 = list(x1 = list(sd = 0.45), x2 = list(sd = 0.35),
+                    x3 = list(sd = 0.40), x4 = list(sd = 0.30)),
+    random_2 = list(x1 = list(sd = 0.45), x2 = list(sd = 0.35),
+                    x3 = list(sd = 0.40), x4 = list(sd = 0.30)),
+    dispersion = c(m1 = 0.4, m2 = 0.5),
+    dependence = "independence", seed = 4242
+  )
+  common <- list(formula_1 = y1 ~ x1 + x2 + x3 + x4,
+                 formula_2 = y2 ~ x1 + x2 + x3 + x4,
+                 data = sim$data,
+                 random_1 = c("x1", "x2", "x3", "x4"),
+                 random_2 = c("x1", "x2", "x3", "x4"),
+                 dependence = "independence",
+                 # The acceptance evidence this codifies was run at draws =
+                 # 200 (SML took 226s there); halved to 100 here to keep the
+                 # suite's runtime down. Agreement was re-checked directly at
+                 # draws = 100 before writing this test.
+                 draws = 100, seed = 4242)
+
+  fit_sml <- do.call(fit_rpbnb_tmb, c(common, list(method = "sml")))
+  fit_lap <- do.call(fit_rpbnb_tmb, c(common, list(method = "laplace")))
+
+  scales <- c("log_sd1:x1", "log_sd1:x2", "log_sd1:x3", "log_sd1:x4",
+              "log_sd2:x1", "log_sd2:x2", "log_sd2:x3", "log_sd2:x4")
+
+  # Same tolerance idiom as "laplace and sml agree on data simulated from the
+  # true process" above: agreement judged against sampling noise, since these
+  # are two approximations to the same integral rather than two computations
+  # of the same number.
+  for (nm in scales) {
+    tol <- 3 * max(fit_sml$se[[nm]], fit_lap$se[[nm]])
+    expect_lt(abs(coef(fit_sml)[[nm]] - coef(fit_lap)[[nm]]), tol)
+  }
+
+  # Not vacuous: if every scale's tolerance were enormous (as x4's is, both
+  # estimators' se(log_sd1:x4) run past 1), the loop above would pass by
+  # construction. Require that most scales (x1-x3 in both equations) are
+  # actually identified with a reasonably tight standard error, so the
+  # agreement demonstrated above is evidence of real correctness rather than
+  # an artifact of loose tolerances.
+  precise <- vapply(scales, function(nm) fit_sml$se[[nm]] < 0.5, logical(1))
+  expect_gte(sum(precise), 4L)
+})
+
 test_that("laplace gives the same answer single- and multi-threaded", {
   skip_on_cran()
+  # Mirrors tests/testthat/test-parallel.R: on a runtime whose TMB build
+  # supports only one thread, requesting 4 cores below silently realizes 1,
+  # which would make this a red test rather than a skip.
+  previous <- TMB::openmp(DLL = "rpbnb.tmb")
+  on.exit(TMB::openmp(n = previous, DLL = "rpbnb.tmb"), add = TRUE)
+  supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
+  if (supported < 2L) skip("TMB runtime supports only one thread")
+
   sim <- simulate_rpbnb_tmb(
     n = 300,
     beta1 = c("(Intercept)" = 0.3, x1 = 0.35),

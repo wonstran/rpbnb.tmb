@@ -140,6 +140,24 @@
 
   # tmbprofile() profiles from last.par.best, not obj$par. Restore it rather
   # than trusting whatever last touched the objective.
+  #
+  # `fit$optimizer$par` is the *fixed*-parameter vector only (length
+  # p_free), which was fine when `random` was always NULL and last.par.best
+  # had no other parameters to carry. Under Laplace, TMB's own
+  # `last.par.best` is length p_free + n*(q1+q2): it also carries the random
+  # effects (u1/u2). Writing only the short fixed-only vector here is
+  # therefore incomplete -- but it is safe, not accidentally-correct-looking:
+  # TMB::tmbprofile() computes `par[-obj$env$random]` to drop the random
+  # indices before using `par`, and because u1/u2 are declared *last* in the
+  # C++ template (see src/*.cpp), obj$env$random holds indices past the end
+  # of this short vector. Negative-indexing with out-of-range indices drops
+  # nothing in R, so `par[-obj$env$random]` returns the vector unchanged and
+  # profiling happens to work. This is an accident of declaration order, not
+  # a designed guarantee: reordering the PARAMETER*/PARAMETER_MATRIX
+  # declarations so u1/u2 are no longer last would silently break
+  # `confint(method = "profile")` on Laplace fits (out-of-range negative
+  # indices would then alias real fixed-parameter positions and silently
+  # drop them instead of no-oping).
   obj$env$last.par.best <- fit$optimizer$par
 
   # `trace` is a real, documented tmbprofile() argument and this function's

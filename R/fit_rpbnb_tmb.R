@@ -43,8 +43,19 @@
 #'   Laplace fit is not a drop-in reproduction of an SML fit. \code{"laplace"}
 #'   supports \code{"normal"} and \code{"lognormal"} random coefficients only,
 #'   and requires at least one random coefficient.
+#'
+#'   \code{summary()} reports AIC and BIC for either estimator, but under
+#'   \code{"laplace"} they are computed from an approximated marginal
+#'   likelihood rather than the exact one, so an AIC from a Laplace fit is not
+#'   meaningful to compare against an AIC from an SML fit of the same model.
 #' @return An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 #'   is a compact package-owned summary and does not retain a second TMB tape.
+#'
+#'   \code{method} records which estimator produced the fit, echoing the
+#'   \code{method} argument (\code{"sml"} or \code{"laplace"}). Both
+#'   \code{print()} and \code{summary()} display it, so two fits of the same
+#'   model under different estimators are distinguishable in their printed
+#'   output.
 #'
 #'   \code{boundary_report} is a character vector naming the reported
 #'   quantities whose estimates are pinned against an implementation bound --
@@ -177,6 +188,14 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   # -effect vector and its sparse Hessian.  Budgeting `1L` here would leave
   # max_workload bounding nothing at all on the very path introduced to solve
   # a memory problem, so the multiplier is the per-observation latent count.
+  # TAPE_CALIBRATION$peak_bytes_per_unit was measured on the SML path (bytes
+  # per observation-draw of SML tape) and has NOT been recalibrated for a
+  # latent integrated out through a sparse Hessian. The one Laplace
+  # measurement available -- the truck acceptance fit -- predicted about
+  # 322 MiB from this constant but measured a 1,222 MB peak working set, ~3-4x
+  # higher even allowing for R's own baseline. So on this path max_workload is
+  # a coarse guard (it will reject workloads that are truly enormous) rather
+  # than a tight one (it should not be trusted to predict the actual peak).
   effective_draws <- if (identical(method, "laplace")) {
     total_rand
   } else if (total_rand > 0L) {

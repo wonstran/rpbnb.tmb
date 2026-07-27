@@ -34,6 +34,17 @@ mib <- function(bytes) bytes / 1024^2
 fixture <- function(family_code, n, draws) {
   set.seed(1)
   x <- rnorm(n)
+  # q1 = 1 (rand_idx1 = 2L), q2 = 0 (rand_idx2 = integer(0)) throughout this
+  # script, so u1 is n x 1 and u2 is n x 0.
+  q1 <- 1L; q2 <- 0L
+  # This script exercises the SML path only (est_method = 0L): the latents
+  # are tape constants at zero, mapped off exactly as R/fit_rpbnb_tmb.R does,
+  # including its guard that a map entry is only added when the parameter has
+  # non-zero length (mapping a zero-length parameter is a no-op TMB rejects
+  # as mismatched with an empty factor of the wrong sort of nothing).
+  map <- list()
+  if (n * q1 > 0) map[["u1"]] <- factor(rep(NA_integer_, n * q1))
+  if (n * q2 > 0) map[["u2"]] <- factor(rep(NA_integer_, n * q2))
   list(
     data = rpbnb.tmb:::.build_tmb_data(
       Y1 = rpois(n, 2), Y2 = rpois(n, 2),
@@ -44,13 +55,15 @@ fixture <- function(family_code, n, draws) {
       dist1 = 0L, dist2 = integer(0),
       sign1 = 1L, sign2 = integer(0),
       family_code = family_code, pois1 = FALSE, pois2 = FALSE,
-      lamLo = -1, lamHi = 1
+      lamLo = -1, lamHi = 1, est_method = 0L
     ),
     parameters = list(
       beta1 = c(0.1, 0.2), beta2 = c(-0.1, -0.15),
       log_sd1 = log(0.2), log_sd2 = numeric(0),
-      log_m1 = log(0.6), log_m2 = log(0.7), z_dep = 0.1
-    )
+      log_m1 = log(0.6), log_m2 = log(0.7), z_dep = 0.1,
+      u1 = matrix(0, n, q1), u2 = matrix(0, n, q2)
+    ),
+    map = map
   )
 }
 
@@ -61,7 +74,7 @@ measure_cell <- function(family_code, n, draws, threads) {
   started <- Sys.time()
   suppressWarnings(TMB::openmp(n = threads, DLL = "rpbnb.tmb"))
   obj <- TMB::MakeADFun(
-    data = spec$data, parameters = spec$parameters,
+    data = spec$data, parameters = spec$parameters, map = spec$map,
     DLL = "rpbnb.tmb", silent = TRUE
   )
   after_tape <- ps::ps_memory_info()

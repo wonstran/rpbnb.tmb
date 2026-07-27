@@ -170,9 +170,19 @@ dimension is genuinely absent from the tape, but it is not replaced by nothing: 
 its place is the latent dimension `n * (q1 + q2)`, which sizes the random-effect vector and its
 sparse Hessian. Budgeting `1L` would leave `max_workload` bounding essentially nothing on the very
 path introduced to solve a memory problem. The truck workload evaluates to 3,487 x 8 = 27,896
-weighted units. At `TAPE_CALIBRATION$peak_bytes_per_unit` (12,083 bytes/unit) that is about
+weighted units. At `TAPE_CALIBRATION$peak_bytes_per_unit` (12,083 bytes/unit) that predicts about
 322 MiB — use the calibration constant rather than the README's rounded "12 kB per unit". Against
 the SML path's 1,046,100 units for the same model, that is a 37x reduction in budgeted workload.
+
+That 322 MiB is only a prediction, though, and the one measurement available shows it is optimistic.
+The truck acceptance run's actual peak working set measured 1,222 MB — roughly 3-4x the prediction,
+even allowing for R's own baseline footprint. The reason is that `peak_bytes_per_unit` was calibrated
+from `inst/benchmark_memory.R` on the SML path, i.e. bytes per observation-*draw* of SML tape, and has
+not been recalibrated for what a Laplace unit actually costs: a latent integrated out through a sparse
+Hessian is a different kind of memory consumer than a replayed draw, and nothing has re-run the
+calibration harness under `est_method = 1` to find its true per-unit cost. Until that recalibration
+happens, `max_workload` on the Laplace path is a coarse guard -- it will still reject workloads that
+are truly enormous -- rather than a tight one, and should not be read as predicting the actual peak.
 
 Note that `rpbnb_tmb_max_workload()` detects *available* memory at call time rather than returning
 a fixed constant or a function of total RAM, so the budget it yields is machine- and

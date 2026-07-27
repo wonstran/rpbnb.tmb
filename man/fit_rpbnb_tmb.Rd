@@ -72,11 +72,22 @@ The two are different approximations to the same integral. They agree
 asymptotically but need not agree closely on any given dataset, so a
 Laplace fit is not a drop-in reproduction of an SML fit. \code{"laplace"}
 supports \code{"normal"} and \code{"lognormal"} random coefficients only,
-and requires at least one random coefficient.}
+and requires at least one random coefficient.
+
+\code{summary()} reports AIC and BIC for either estimator, but under
+\code{"laplace"} they are computed from an approximated marginal
+likelihood rather than the exact one, so an AIC from a Laplace fit is not
+meaningful to compare against an AIC from an SML fit of the same model.}
 }
 \value{
 An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 is a compact package-owned summary and does not retain a second TMB tape.
+
+\code{method} records which estimator produced the fit, echoing the
+\code{method} argument (\code{"sml"} or \code{"laplace"}). Both
+\code{print()} and \code{summary()} display it, so two fits of the same
+model under different estimators are distinguishable in their printed
+output.
 
 \code{boundary_report} is a character vector naming the reported
 quantities whose estimates are pinned against an implementation bound --
