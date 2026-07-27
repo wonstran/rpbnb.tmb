@@ -393,7 +393,7 @@ Expected: the three new tests FAIL with an unused-argument error for `method`. T
 
 - [ ] **Step 3: Add the argument and match it**
 
-In `R/fit_rpbnb_tmb.R`, change the signature (lines 70-77) to add `method` after `keep`:
+In `R/fit_rpbnb_tmb.R`, change the signature (lines 70-77) to add `method` **last**, after `poisson_2`:
 
 ```r
 fit_rpbnb_tmb <- function(formula_1, formula_2, data,
@@ -403,9 +403,11 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
                           control = rpbnb_tmb_control(),
                           inference = c("full", "diag", "none"),
                           keep = c("postfit", "compact", "full"),
-                          method = c("sml", "laplace"),
-                          poisson_1 = FALSE, poisson_2 = FALSE) {
+                          poisson_1 = FALSE, poisson_2 = FALSE,
+                          method = c("sml", "laplace")) {
 ```
+
+Appending rather than inserting is deliberate: inserting `method` before `poisson_1` would shift the positional index of `poisson_1` and `poisson_2`, silently breaking any positional caller. The global constraint that no existing call site may change binds here.
 
 Next to the existing `keep <- match.arg(keep)` (line 92), add:
 
@@ -700,7 +702,7 @@ In `R/fit_rpbnb_tmb.R`, replace the `@param draws` line (line 13) with:
 #'   marginal-effect functions.
 ```
 
-and add, immediately after the `@param keep` block:
+and add, immediately after the `@param poisson_2` block (roxygen `@param` order is independent of signature order, but keeping them aligned aids review):
 
 ```r
 #' @param method Estimator for the random-coefficient integral. \code{"sml"}
