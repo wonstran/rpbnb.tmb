@@ -70,6 +70,7 @@
     <li><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a></li>
     <li><a href="#simulate-rpbnb-tmb">simulate_rpbnb_tmb</a></li>
     <li><a href="#rpbnb-tmb-control">rpbnb_tmb_control</a></li>
+    <li><a href="#max-workload">rpbnb_tmb_max_workload</a></li>
     <li><a href="#copula">copula</a></li>
     <li><a href="#marginal-effects">rpbnb_tmb_marginal_effects</a></li>
     <li><a href="#elasticities">rpbnb_tmb_elasticities</a></li>
@@ -199,14 +200,29 @@ head(sim$data)</code></pre>
     <dt>print_level</dt><dd>Nonnegative verbosity level used by the fitting process.</dd>
     <dt>n_cores</dt><dd>One whole-number TMB/OpenMP thread request. The installed TMB DLL can realize fewer threads; inspect <code>fit$parallel</code> after fitting.</dd>
     <dt>max_threads</dt><dd>Maximum OpenMP threads permitted for one fit; <code>n_cores</code> requests above this are capped. Raise it explicitly to opt into a larger memory footprint.</dd>
-    <dt>max_workload</dt><dd>Maximum weighted observation-draw evaluations (<code>n * draws</code>, family-weighted) permitted before TMB tape construction; <code>Inf</code> disables the guard. The default targets a peak working set of about 8 GiB for one fit, calibrated by <code>inst/benchmark_memory.R</code>. Family weights relative to Famoye (<code>1</code>): independence <code>0.7</code>, Frank <code>2.9</code>, Gaussian <code>1.1</code>, Clayton <code>1</code>. With <code>parallel_tape = TRUE</code> the guard multiplies the workload by the realized thread count, since tapes are then built concurrently.</dd>
+    <dt>max_workload</dt><dd>Maximum weighted observation-draw evaluations (<code>n * draws</code>, family-weighted) permitted before TMB tape construction; <code>Inf</code> disables the guard. The default targets a peak working set of about 8 GiB for one fit, calibrated by <code>inst/benchmark_memory.R</code>. Family weights are the largest <em>peak</em> memory ratio to Famoye (<code>1</code>) at matched workload, rounded up to the next tenth: independence <code>0.7</code>, Frank <code>3.6</code>, Gaussian <code>0.9</code>, Clayton <code>1.1</code>. With <code>parallel_tape = TRUE</code> the guard multiplies the workload by the realized thread count, since tapes are then built concurrently.</dd>
     <dt>parallel_tape</dt><dd>Construct per-thread TMB tapes concurrently. The default <code>FALSE</code> builds them sequentially to reduce peak memory; objective and gradient evaluation remain parallel regardless.</dd>
     <dt>halton_burn</dt><dd>Number of leading Halton points discarded before simulation draws are used.</dd>
   </dl>
   <h3>Value</h3><p>An object of class <code>rpbnb_tmb_control</code>.</p>
   <h3>Examples</h3><pre><code class="example">ctrl &lt;- rpbnb_tmb_control(iterlim = 300L, n_cores = 1L)
 ctrl$n_cores</code></pre>
-  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>.</p>
+  <h3>See Also</h3><p><a href="#fit-rpbnb-tmb">fit_rpbnb_tmb</a>, <a href="#max-workload">rpbnb_tmb_max_workload</a>.</p>
+</section>
+
+<section class="entry" id="max-workload">
+  <h2>Compute a workload budget from a memory figure</h2>
+  <h3>Description</h3><p>Converts a memory budget into a value for <a href="#rpbnb-tmb-control">rpbnb_tmb_control</a>'s <code>max_workload</code>, so a budget can be stated in GiB rather than in weighted observation-draws. This is also <code>rpbnb_tmb_control()</code>'s own default: every fit that does not set <code>max_workload</code> explicitly already goes through it.</p>
+  <h3>Usage</h3><pre><code>rpbnb_tmb_max_workload(budget_gib = NULL, fraction = 0.8)</code></pre>
+  <h3>Arguments</h3>
+  <dl>
+    <dt>budget_gib</dt><dd>Optional memory budget in GiB. When supplied it is used as stated and <code>fraction</code> does not apply. When omitted, available memory is auto-detected and <code>fraction</code> of it is budgeted instead.</dd>
+    <dt>fraction</dt><dd>Of auto-detected available memory, the fraction to budget; one number in <code>(0, 1]</code>. Available memory fluctuates and competes with other processes, so budgeting all of it risks passing a fit that then exhausts memory anyway. Ignored when <code>budget_gib</code> is supplied.</dd>
+  </dl>
+  <h3>Value</h3><p>One positive numeric workload, on the same scale as <code>max_workload</code>.</p>
+  <h3>Details</h3><p>Memory detection is best-effort and platform-specific: <code>/proc/meminfo</code> on Linux, <code>vm_stat</code> on macOS, and <code>Get-CimInstance Win32_OperatingSystem</code> (falling back to <code>wmic</code>) on Windows. Every path degrades to a warning and the fixed 8 GiB calibration budget rather than an error, because this feeds a default argument. Pass <code>budget_gib</code> explicitly where detection is unavailable or where a reproducible budget matters.</p>
+  <h3>Examples</h3><pre><code class="example">rpbnb_tmb_max_workload(budget_gib = 16)</code></pre>
+  <h3>See Also</h3><p><a href="#rpbnb-tmb-control">rpbnb_tmb_control</a>.</p>
 </section>
 
 <section class="entry" id="copula">
@@ -216,10 +232,10 @@ ctrl$n_cores</code></pre>
   <h3>Arguments</h3>
   <dl>
     <dt>family</dt><dd>One of <code>"frank"</code>, <code>"normal"</code>, or <code>"kimeldorf"</code>.</dd>
-    <dt>par</dt><dd>Optional fixed family parameter. For the Normal family, <code>|rho| &lt; 1</code>; for the Kimeldorf/Clayton family, <code>theta &gt; 0</code>; and for Frank, the parameter must be finite.</dd>
+    <dt>par</dt><dd>Optional family parameter, used for <em>simulation only</em>. For the Normal family, <code>|rho| &lt; 1</code>; for the Kimeldorf/Clayton family, <code>theta &gt; 0</code>; and for Frank, the parameter must be finite.</dd>
   </dl>
   <h3>Value</h3><p>An object of class <code>rpbnb_copula</code> containing the selected family and optional parameter.</p>
-  <h3>Details</h3><p>With an unspecified parameter, the dependence parameter is estimated by the fitting routine. Use <code>"independence"</code> rather than a copula object when an independent model is required.</p>
+  <h3>Details</h3><p><code>par</code> applies to <code>simulate_rpbnb_tmb()</code> only, where omitting it simulates independence. <code>fit_rpbnb_tmb()</code> always estimates the dependence parameter and reads only <code>family</code>, so it raises an error on a non-<code>NULL</code> <code>par</code> rather than accepting and ignoring it; use <code>start</code> there to set a working-scale starting value. Use <code>"independence"</code> rather than a copula object when an independent model is required.</p>
   <h3>Examples</h3><pre><code class="example">copula("frank")
 copula("normal", par = 0.3)
 copula("kimeldorf", par = 1.2)</code></pre>

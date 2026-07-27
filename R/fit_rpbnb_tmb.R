@@ -102,6 +102,17 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
 
   # Resolve dependence
   family_code <- .resolve_family_code(dependence)
+  # `copula(par = )` is a simulation argument. The fitting path reads only the
+  # family, and the dependence parameter is always estimated -- so accepting a
+  # `par` here would validate it, ignore it, and return a fit indistinguishable
+  # from one that never supplied it. Reject it instead of silently discarding
+  # a value the caller had every reason to think was doing something.
+  if (inherits(dependence, "rpbnb_copula") && !is.null(dependence$par)) {
+    stop("`copula(par = )` is a simulation argument and has no effect on ",
+         "fitting: the dependence parameter is always estimated. Drop `par` ",
+         "to fit, or use `start` to set its working-scale starting value.",
+         call. = FALSE)
+  }
   # Codes 1-3 are exactly the copula families.
   if (family_code >= 1L && (isTRUE(poisson_1) || isTRUE(poisson_2))) {
     stop("Poisson-limit margins not supported with copula dependence.")

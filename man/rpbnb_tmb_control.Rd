@@ -36,9 +36,9 @@ One unit is one weighted observation-draw. All figures are measured by \code{ins
 
 Retained tape size depends on \code{n * draws} alone: tape (MiB) = 13.374 + 0.001164 * units, with R^2 = 0.9994 (1221 bytes per unit over the largest workloads; per-unit cost is higher at small workloads because of the fixed intercept).
 
-The budget is set on \emph{peak} working set, not on retained tape, because peak is what exhausts memory: TMB records the whole likelihood before pruning it to each parallel region, so peak runs about 6.11 times the retained footprint, or 12083 bytes per unit. The default of 700,000 units therefore targets a peak of about 8 GiB for one fit.
+The budget is set on \emph{peak} working set, not on retained tape, because peak is what exhausts memory: TMB records the whole likelihood before pruning it to each parallel region, so peak runs about 6.11 times the retained tape plus first-evaluation growth, or 12083 bytes per unit measured directly against peak. The default of 700,000 units therefore targets a peak of about 8 GiB for one fit.
 
-Families cost different amounts per unit, so each carries a weight -- the largest ratio to Famoye observed at matched workload: independence 0.7, famoye 1, frank 2.9, gaussian 1.1, clayton 1. Frank is nearly three times Famoye, so treating it as unweighted would under-budget it threefold.
+Families cost different amounts per unit, so each carries a weight -- the largest \emph{peak} ratio to Famoye observed at matched workload, rounded up to the next tenth: independence 0.7, famoye 1, frank 3.6, gaussian 0.9, clayton 1.1. Frank peaks at over three and a half times Famoye, so treating it as unweighted would under-budget it more than threefold.
 
 Raise \code{max_workload} deliberately against the memory you actually have, not to make one particular dataset fit.
 

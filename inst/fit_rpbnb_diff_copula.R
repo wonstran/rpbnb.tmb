@@ -22,13 +22,16 @@ library(rpbnb.tmb)
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 
 # ---- Settings ---------------------------------------------------------------
-# Frank costs about 2.9x Famoye per observation-draw (see TAPE_CALIBRATION /
+# Frank peaks at about 3.6x Famoye per observation-draw (see TAPE_CALIBRATION /
 # inst/benchmark_memory.R), so the same memory budget buys proportionally
-# fewer draws. 3874 obs x 100 draws x 2.9 is ~1.1e6 weighted units; raise
-# max_workload deliberately if you have the memory for more.
-n_obs <- 5000L
-draws <- 100L
-n_cores <- 8 #parallel::detectCores(logical = FALSE)
+# fewer draws. This configuration is
+#   1000 obs x 200 draws x 3.6 = 7.2e5 weighted units  (~8.1 GiB peak).
+# Using the whole file instead (3874 obs) would be 2.8e6 units and about
+# 31 GiB, which is why this demo subsets. Raise `n_obs` only against memory
+# you actually have.
+n_obs <- 1000L
+draws <- 200L
+n_cores <- 12 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
@@ -58,17 +61,18 @@ t_fit <- system.time(
     data       = data,
     random_1   = "hhninc",   # random slope on hhninc (eq 1), continuous, in f1
     random_2   = "educ",     # random slope on educ   (eq 2), continuous, in f2
-    dependence = copula("frank"),   # try "normal" or "kimeldorf"
+    dependence = copula("frank"),   # try "normal", "frank", or "kimeldorf"
     draws      = draws,
     seed       = 20240712,
     control    = rpbnb_tmb_control(
       print_level = 1,
       n_cores     = n_cores,
-      # 3874 x 100 x 2.9 = 1.1e6 weighted units, above the 7e5 default. This
-      # is the deliberate opt-in the documentation asks for, not a workaround:
-      # at ~12 kB peak per unit it commits to roughly 13 GiB. Lower `draws` if
-      # you have less memory than that.
-      max_workload = 1.2e6
+      max_threads = n_cores,
+      # 7.2e5 weighted units is just above the 7e5 fixed-fallback figure, so
+      # state the budget rather than a raw unit count. This is the deliberate
+      # opt-in the documentation asks for: ~12 kB peak per unit means this
+      # commits to roughly 9 GiB. Lower `draws` if you have less than that.
+      max_workload = rpbnb_tmb_max_workload(budget_gib = 9)
     )
   )
 )[["elapsed"]]

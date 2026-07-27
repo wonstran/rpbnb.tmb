@@ -139,3 +139,61 @@ test_that("dependence specifications resolve to one shared family code", {
   # "gaussian" is not a valid dependence string; only copula("normal") is.
   expect_error(.resolve_family_code("gaussian"), "must be")
 })
+
+test_that("a transformed formula cannot misalign the two equations", {
+  # complete.cases() on the raw variables passes here -- the NaN is created by
+  # log() inside formula_1 only. Before both frames shared one row mask, eq 1
+  # silently used original rows 2-6 while eq 2 used rows 1-6, and the template
+  # (which takes n from Y1 and indexes Y2/X2 with it) paired observation i of
+  # one outcome with observation i+1 of the other. It fitted without complaint.
+  d <- data.frame(
+    y1 = c(0, 1, 1, 2, 2, 3),
+    y2 = c(0, 0, 1, 1, 2, 2),
+    x  = c(-1, 1, 2, 3, 4, 5)
+  )
+
+  prep <- suppressWarnings(.prepare_bnb_data(y1 ~ log(x), y2 ~ x, d))
+
+  expect_identical(length(prep$Y1), length(prep$Y2))
+  expect_identical(nrow(prep$X1), nrow(prep$X2))
+  expect_identical(prep$n, nrow(prep$X1))
+  # Row 1 (x = -1) is the only one dropped, from BOTH equations.
+  expect_identical(prep$Y1, as.integer(d$y1[-1L]))
+  expect_identical(prep$Y2, as.integer(d$y2[-1L]))
+  expect_identical(prep$n, 5L)
+})
+
+test_that("a transformation dropping rows from either side drops both", {
+  d <- data.frame(
+    y1 = c(0, 1, 1, 2, 2, 3),
+    y2 = c(0, 0, 1, 1, 2, 2),
+    x  = c(-1, 1, 2, 3, 4, 5),
+    w  = c(1, 2, 3, 4, 5, -1)
+  )
+
+  # One row lost to each equation, at opposite ends: four survive in both.
+  prep <- suppressWarnings(.prepare_bnb_data(y1 ~ log(x), y2 ~ log(w), d))
+
+  expect_identical(prep$n, 4L)
+  expect_identical(prep$Y1, as.integer(d$y1[2:5]))
+  expect_identical(prep$Y2, as.integer(d$y2[2:5]))
+  expect_identical(nrow(prep$data), 4L)
+})
+
+test_that("copula(par = ) is rejected by the fitter rather than ignored", {
+  # It is validated by copula() and then read only by simulate_rpbnb_tmb().
+  # Accepting it here would return a fit bit-identical to one that never
+  # passed it, which is the failure mode this rejection exists to prevent.
+  d <- api_test_data(40L)
+
+  expect_error(
+    fit_rpbnb_tmb(y1 ~ x, y2 ~ x, d, dependence = copula("normal", par = 0.75),
+                  inference = "none"),
+    "simulation argument"
+  )
+  expect_no_error(
+    fit_rpbnb_tmb(y1 ~ x, y2 ~ x, d, dependence = copula("normal"),
+                  inference = "none",
+                  control = rpbnb_tmb_control(iterlim = 5L))
+  )
+})
