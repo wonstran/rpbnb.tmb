@@ -1,7 +1,7 @@
 Package: rpbnb.tmb
 Type: Package
 Title: Random-Parameter Bivariate Negative Binomial Regression (TMB)
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: person("Zhenyu", "Wang", email = "wonstran@hotmail.com", role = c("aut", "cre"))
 Description: Maximum-simulated-likelihood estimation of a bivariate
     random-parameter negative binomial model with Famoye/Sarmanov or
