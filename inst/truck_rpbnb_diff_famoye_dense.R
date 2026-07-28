@@ -30,15 +30,15 @@ sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 # 12 kB per observation-draw (see TAPE_CALIBRATION / inst/benchmark_memory.R),
 # so 3874 obs x 200 draws is ~8 GiB peak -- right at the default
 # max_workload. Raise both deliberately if you have the memory.
-
-draws <- 300L
+n_obs <- 5000L
+draws <- 500L
 n_cores <- 12 #parallel::detectCores(logical = FALSE)
 if (is.na(n_cores)) n_cores <- 1L
 
 # ---- 1. Data ----------------------------------------------------------------
 data <- read.csv(here("inst\\extdata", "export_dense_all.csv"))
 
-#data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]  # comment this line to use all obs
+data <- data[seq_len(min(n_obs, nrow(data))), , drop = FALSE]  # comment this line to use all obs
 cat("=== RP-BNB on truck all crashes ===\n")
 cat("Observations :", nrow(data), "\n")
 cat("Draws        :", draws, "\n")
@@ -92,7 +92,9 @@ cat(
 
 # ---- 3. Model summary -------------------------------------------------------
 sep(); cat("MODEL SUMMARY\n"); sep()
-summary(fit)
+model_summary_output <- capture.output(summary(fit))
+cat(model_summary_output, sep = "\n")
+cat("\n")
 
 # ---- 4. Fitted means (predict) ----------------------------------------------
 sep(); cat("FITTED MEANS (predict) -- first 6 observations\n"); sep()
@@ -108,8 +110,24 @@ if (!is.null(sdr)) {
 
 # ---- 6. Marginal effects (AME) -----------------------------------------------
 sep(); cat("AVERAGE MARGINAL EFFECTS (AME)\n"); sep()
-rpbnb_tmb_marginal_effects(fit, which = "both")
+marginal_effects_output <- capture.output(
+  marginal_effects <- rpbnb_tmb_marginal_effects(fit, which = "both")
+)
+cat(marginal_effects_output, sep = "\n")
+cat("\n")
 
 # ---- 7. Elasticities / semi-elasticities (AME) --------------------------------
 sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
-rpbnb_tmb_elasticities(fit, which = "both")
+elasticities_output <- capture.output(
+  elasticities <- rpbnb_tmb_elasticities(fit, which = "both")
+)
+cat(elasticities_output, sep = "\n")
+cat("\n")
+
+# ---- 8. Export requested results -------------------------------------------
+results_path <- .write_truck_results_markdown(
+  model_summary = model_summary_output,
+  marginal_effects = marginal_effects_output,
+  elasticities = elasticities_output
+)
+cat("Results written to:", results_path, "\n")
