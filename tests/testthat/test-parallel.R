@@ -466,18 +466,33 @@ test_that("serial and parallel copula objectives and gradients agree", {
   supported <- as.integer(TMB::openmp(max = TRUE, DLL = "rpbnb.tmb")[[1L]])
   if (supported < 2L) skip("TMB runtime supports only one thread")
 
-  reference_fn <- c(`1` = 23.1990464774657, `2` = 23.0779112497932)
+  # The Gaussian (`2`) constants were refreshed when gaussian_cell_prob()
+  # replaced the second difference of four bivariate-normal CDFs with a single
+  # conditional strip integral. The previous values were not merely "different"
+  # -- they were slightly wrong: on this fixture, whose smallest cell
+  # probability is 0.011 and so is nowhere near any rounding floor, the old
+  # objective read 23.0779112497932 against a true 23.0783037531709, a relative
+  # error of 1.7e-5 from cancellation in the second difference.
+  #
+  # The replacement value is not copied out of the template. It was rebuilt
+  # independently in R from the model definition -- SML over the four Halton
+  # draws, NB2 margins from pnbinom(), and the cell probability from
+  # stats::integrate() on the conditional integral -- and agreed to all 16
+  # digits. The Frank (`1`) constants are unchanged and still pass, which is
+  # also the check that the log-space NB2 CDF rewrite left well-conditioned
+  # margins bit-for-bit alone.
+  reference_fn <- c(`1` = 23.1990464774657, `2` = 23.0783037531709)
   reference_gr <- list(
     `1` = c(-0.234009598804351, -0.644262309598928,
             -0.30606552853166, -0.378131107639618,
             0.00289799326474705, -0.00572295641355119,
             0.468916002251157, 0.365254841128196,
             0.737716614784872),
-    `2` = c(-0.0442292322068991, -0.604280050235007,
-            -0.668739747888821, -0.551604808939026,
-            0.00734542308301755, -0.00647710160389995,
-            0.443987374428227, 0.355502072666529,
-            3.79146327117669)
+    `2` = c(-0.0446510083836118, -0.604189214598941,
+            -0.668280951450693, -0.551654977576271,
+            0.00733584054024047, -0.0064848075862248,
+            0.4440210841372, 0.355469128096536,
+            3.7917127004051)
   )
 
   for (family_code in c(1L, 2L)) {

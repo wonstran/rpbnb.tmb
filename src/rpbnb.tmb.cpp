@@ -86,25 +86,50 @@ Type stable_log1p(Type x) {
 //
 // Summing the mass function is exact and differentiable to every order.  Cost
 // is O(y) per margin per evaluation, against one atomic call; on the truck
-// workload that is about 12 extra terms per observation.  Each term is a
-// probability in [0, 1] so the running sum cannot overflow, and the leading
-// term underflows to zero only where pbeta() also returned zero.
+// workload that is about 12 extra terms per observation.
+//
+// Seeding the recursion with the linear-space P(Y = 0) is unsound: that term
+// underflows to exact 0 whenever r * log(p) drops below about -745 (e.g.
+// mu = r = 2000, an ordinary low-dispersion/high-mean region -- p^r =
+// 0.5^2000), and once the seed is zero every later term stays zero too,
+// because each step only ever multiplies the previous one. The recursion
+// then reports P(Y = y) = 0 even where the true mass near the mode is
+// perfectly representable (0.0063 at mu = r = y = 2000), handing the
+// optimizer a flat, wrong objective instead of the real likelihood.
+//
+// Tracking the same recursion in log space avoids this: log P(Y = 0) =
+// r * log(p) is an ordinary finite double even when P(Y = 0) itself
+// underflows, and each step adds a log increment that is well-conditioned
+// wherever the true mass is well-conditioned, regardless of how small the
+// k = 0 term was. The running cdf is accumulated with a log-sum-exp so it
+// never has to pass through the linear-space representation of a term
+// until the final result -- which only underflows to 0 when the true
+// probability truly is negligible.
+template<class Type>
+Type log_add_exp(Type a, Type b) {
+  Type hi = CppAD::CondExpGt(a, b, a, b);
+  Type lo = CppAD::CondExpGt(a, b, b, a);
+  return hi + stable_log1p(exp(lo - hi));
+}
+
 template<class Type>
 void nb2_cdf_pair(int y, Type mu, Type r,
                   Type &cdf_y, Type &cdf_ym1, Type &pmf_y) {
-  Type p = r / (r + mu);
-  Type q = mu / (r + mu);
-  Type term = exp(r * log(p));  // P(Y = 0)
-  Type cum = term;
+  Type log_p = log(r) - log(r + mu);
+  Type log_q = log(mu) - log(r + mu);
+  Type log_term = r * log_p;  // log P(Y = 0)
+  Type log_cum = log_term;
+  Type log_cdf_ym1 = log_term;
   cdf_ym1 = Type(0);
   for (int k = 1; k <= y; k++) {
-    cdf_ym1 = cum;
-    // P(Y = k) = P(Y = k - 1) * (r + k - 1) / k * q
-    term *= (r + Type(k - 1)) * q * Type(1.0 / k);
-    cum += term;
+    log_cdf_ym1 = log_cum;
+    // log P(Y = k) = log P(Y = k - 1) + log(r + k - 1) - log(k) + log(q)
+    log_term += log(r + Type(k - 1)) - log(Type(k)) + log_q;
+    log_cum = log_add_exp(log_cum, log_term);
   }
-  cdf_y = cum;
-  pmf_y = term;
+  if (y > 0) cdf_ym1 = exp(log_cdf_ym1);
+  cdf_y = exp(log_cum);
+  pmf_y = exp(log_term);
 }
 
 // Frank's joint probability of the cell (a', a] x (b', b], evaluated as ONE
@@ -163,138 +188,169 @@ Type frank_cell_prob(Type a, Type am, Type pmf_a,
   return CppAD::CondExpLt(fabs(th), Type(1e-5), near_independence, regular);
 }
 
-// Tape-compressed 20-point bivariate-normal CDF quadrature.
+// Clayton's joint probability of the cell (a', a] x (b', b], rearranged so
+// that no step subtracts two nearly-equal numbers.
+//
+// Clayton has the same tail-cancellation defect the naive second difference
+// gave Frank, and it is not hypothetical.  On the truck data at the fit's own
+// starting values -- all slopes zero, so mu = 1 against counts running to 266
+// -- C(a,b) - C(a',b) - C(a,b') + C(a',b') returns a NON-POSITIVE probability
+// for 243 of 3,487 observations and a strictly NEGATIVE one for 11, where the
+// true cell probabilities run down to 1e-136.  Under SML those only corrupt
+// the objective (each clamped cell contributes the 1e-300 floor, about 691
+// nats).  Under Laplace the negative ones put negative curvature into the
+// inner Hessian, and TMB's inner Newton cannot take even its first step:
+// method = "laplace" with copula("kimeldorf") failed outright with "inner
+// newton optimization failed during gradient calculation".
+//
+// Write C(u,v) = s^k with s = 1 + A(u) + A(v), A(u) = u^-th - 1 and
+// k = -1/th.  Factoring out the corner s00 = 1 + A(a) + A(b) and setting
+// x = dA / s00, y = dB / s00 with dA = A(a') - A(a) >= 0 leaves
+//
+//   p  = s00^k * [ exp(u2) * expm1(u1 - u2) + ex * expm1(u1) ]
+//   ex = expm1(k * log1p(x))
+//   u1 = k * log1p(y / (1 + x))
+//   u2 = k * log1p(y)
+//   u1 - u2 = k * log1p(-x*y / ((1 + x)(1 + y)))
+//
+// The last identity is what removes the cancellation.  The naive difference
+// has to recover an O(xy) second-order term by subtracting four O(1)
+// quantities; here that term is written in closed form.  Because k < 0 and
+// x, y >= 0, every factor above is sign-determined and both bracket terms are
+// positive, so p is positive BY CONSTRUCTION rather than by clamping -- which
+// is exactly what the inner Newton needs.
+//
+// dA is built from the marginal mass directly,
+// dA = a^-th * expm1(th * log1p(pmf_a / a')), instead of from two CDFs that
+// have both saturated at 1.
+//
+// The y = 0 branches are separate because A(0) is infinite: there the cell is
+// bounded by the axis and the second difference degenerates to a first
+// difference.  They are selected on the observed counts alone, so they stay
+// valid on a non-retaped objective, matching the convention the Gaussian and
+// former Clayton branches already used.
 template<class Type>
-Type gaussian_bvn_quadrature(Type h, Type k, Type r) {
-  Type sig2 = Type(1.0) - r * r;
+Type clayton_cell_prob(Type a, Type am, Type pmf_a,
+                       Type b, Type bm, Type pmf_b, Type th) {
+  // th = exp(z_dep) with z_dep clamped to [-20, 20], so th reaches 4.8e8 and
+  // u^-th = exp(-th log u) overflows to infinity long before that.  An
+  // infinite x or y would make the ratio below round to exactly 1 and hand
+  // log1p() a -1 argument, i.e. exactly the NaN gradient this function exists
+  // to remove.  Two bounds keep every intermediate finite:
+  //   * each exponent is capped at 350, so the two factors of dA multiply to
+  //     at most 1e304;
+  //   * x and y are capped at 1e15, past which (1 + x)^k is already
+  //     indistinguishable from x^k in double precision -- the function has
+  //     saturated at its a' -> 0 limit and the cap changes no representable
+  //     digit -- while leaving 1 - x*y/((1+x)(1+y)) safely above the rounding
+  //     floor (it is 2e-15 at the cap, against an eps of 2.2e-16).
+  auto capped_exp = [](Type e, Type hi) -> Type {
+    return exp(CppAD::CondExpGt(e, hi, hi, e));
+  };
+  Type k = Type(-1.0) / th;
+  Type s00 = capped_exp(-th * log(a), Type(700)) +
+    capped_exp(-th * log(b), Type(700)) - Type(1);
+  Type C00 = exp(k * log(s00));  // C(a, b)
+
+  bool a_zero = (asDouble(am) == 0.0);
+  bool b_zero = (asDouble(bm) == 0.0);
+
+  // s00 >= 1 because a, b <= 1 makes both A() terms non-negative, so the
+  // divisions below cannot inflate their numerators.
+  auto cell_ratio = [&](Type u, Type pmf_u, Type um) -> Type {
+    Type e = th * stable_log1p(pmf_u / um);
+    Type d = capped_exp(-th * log(u), Type(350)) *
+      stable_expm1(CppAD::CondExpGt(e, Type(350), Type(350), e));
+    Type r = d / s00;
+    return CppAD::CondExpGt(r, Type(1e15), Type(1e15), r);
+  };
+
+  Type x = Type(0), y = Type(0);
+  if (!a_zero) x = cell_ratio(a, pmf_a, am);
+  if (!b_zero) y = cell_ratio(b, pmf_b, bm);
+
+  if (a_zero && b_zero) return C00;
+
+  Type ex = stable_expm1(k * stable_log1p(x));
+  if (b_zero) return -C00 * ex;
+
+  Type u2 = k * stable_log1p(y);
+  if (a_zero) return -C00 * stable_expm1(u2);
+
+  Type u1 = k * stable_log1p(y / (Type(1) + x));
+  Type du = k * stable_log1p(
+    -x * y / ((Type(1) + x) * (Type(1) + y))
+  );
+  return C00 * (exp(u2) * stable_expm1(du) + ex * stable_expm1(u1));
+}
+
+// Gaussian's joint probability of the cell (a', a] x (b', b], evaluated as ONE
+// strip integral instead of the second difference of four corner CDFs.
+//
+// Gaussian was the last family still taking the naive second difference, and
+// it cancels there exactly as Frank and Clayton did.  On the truck data at the
+// fit's own starting values (mu = 1 against counts running to 266) the
+// four-corner form returns a non-positive cell probability for 457 to 600 of
+// the 3,487 observations depending on rho, of which 212 to 355 are strictly
+// NEGATIVE -- the negative-curvature source that stops TMB's inner Newton
+// under method = "laplace".  The strip integral below leaves 245 floored
+// cells and no negative ones, which lowers the objective at those starting
+// values from about 334,000-432,000 to about 196,000-203,000.
+//
+// Conditioning the bivariate normal on the first margin gives
+//
+//   P = int_{q(a')}^{q(a)} phi(z) [ Phi((q(b) - rho z)/s)
+//                                 - Phi((q(b') - rho z)/s) ] dz
+//
+// with s = sqrt(1 - rho^2).  The integrand is a product of non-negative
+// factors (q(b) >= q(b') makes the bracket non-negative) and the limits are
+// ordered, so P is non-negative BY CONSTRUCTION rather than by clamping.
+//
+// Integrating in z rather than in the probability variable matters: the same
+// rule applied to int_{a'}^{a} ... dt has to evaluate qnorm() near the ends of
+// the interval, where it is singular, and Gauss-Legendre then converges only
+// as O(1/n) -- 1.5e-4 relative error at 20 points, against 1.5e-10 for the
+// form below.  The probability-space version buys an exactly-known interval
+// width (the marginal mass) at the cost of that singularity; it is not worth
+// the trade here.
+//
+// The inner difference is taken on whichever tail is not saturated, since
+// Phi(A) - Phi(B) cancels when both arguments are large and positive -- and
+// they are: the truck data's second margin reaches counts of 47 against
+// mu = 1, putting b at 1 - 1e-22.
+//
+// Remaining limitation, deliberately not papered over: when a and a' are close
+// enough that the safe_qnorm() clamp maps both to the same point (245 of the
+// 3,487 truck cells at the starting values), q(a) == q(a') and this returns 0,
+// which the caller floors.  Gaussian must pass through qnorm(), which is
+// singular at 1, so once the NB2 CDF reaches the clamp the cell cannot be
+// recovered from the CDF at all -- that would take a separately accumulated
+// survival function.  Frank and Clayton are not affected because their
+// generators stay analytic at u = 1.  Unlike the second difference, this at
+// least fails to zero rather than to a negative number.
+template<class Type>
+Type gaussian_cell_prob(Type qa, Type qam, Type qb, Type qbm, Type rho) {
+  Type sig2 = Type(1.0) - rho * rho;
   sig2 = CppAD::CondExpLt(sig2, Type(1e-12), Type(1e-12), sig2);
   Type sig = sqrt(sig2);
-  Type ph = pnorm(h);
-  Type pk = pnorm(k);
-  Type a = CppAD::CondExpLe(ph, pk, ph, pk);
-  Type oth = CppAD::CondExpLe(ph, pk, k, h);
-  oth = CppAD::CondExpGt(oth, Type(10.0), Type(10.0), oth);
-  oth = CppAD::CondExpLt(oth, Type(-10.0), Type(-10.0), oth);
-  a = CppAD::CondExpGe(a, Type(1.0), Type(1.0 - 1e-10), a);
-  a = CppAD::CondExpLe(a, Type(1e-10), Type(1e-10), a);
 
-  Type result = Type(0);
-  Type hw = a / Type(2.0);
-  Type mid = a / Type(2.0);
-  for (int i = 0; i < 10; i++) {
-    Type z1 = qnorm(mid + hw * Type(gaussian_x20[i]));
-    Type z2 = qnorm(mid - hw * Type(gaussian_x20[i]));
-    Type arg1 = (oth - r * z1) / sig;
-    Type arg2 = (oth - r * z2) / sig;
-    result += Type(gaussian_w20[i]) * (pnorm(arg1) + pnorm(arg2));
-  }
+  Type half = (qa - qam) / Type(2);
+  Type mid = (qa + qam) / Type(2);
 
-  return result * hw;
-}
-
-// Differentiate the quadrature itself so the atomic gradient remains exactly
-// consistent with its value, including its conditional integration limits.
-template<class Type>
-vector<Type> gaussian_bvn_quadrature_gradient(Type h, Type k, Type r) {
-  Type raw_sig2 = Type(1.0) - r * r;
-  Type sig2 = CppAD::CondExpLt(
-    raw_sig2, Type(1e-12), Type(1e-12), raw_sig2
-  );
-  Type dsig2_dr = CppAD::CondExpLt(
-    raw_sig2, Type(1e-12), Type(0), Type(-2) * r
-  );
-  Type sig = sqrt(sig2);
-  Type dsig_dr = dsig2_dr / (Type(2) * sig);
-
-  Type ph = pnorm(h);
-  Type pk = pnorm(k);
-  Type raw_a = CppAD::CondExpLe(ph, pk, ph, pk);
-  Type raw_oth = CppAD::CondExpLe(ph, pk, k, h);
-  Type a = CppAD::CondExpGe(
-    raw_a, Type(1.0), Type(1.0 - 1e-10), raw_a
-  );
-  a = CppAD::CondExpLe(a, Type(1e-10), Type(1e-10), a);
-  Type oth = CppAD::CondExpGt(
-    raw_oth, Type(10.0), Type(10.0), raw_oth
-  );
-  oth = CppAD::CondExpLt(oth, Type(-10.0), Type(-10.0), oth);
-
-  Type a_active = CppAD::CondExpGe(
-    raw_a, Type(1.0), Type(0),
-    CppAD::CondExpLe(raw_a, Type(1e-10), Type(0), Type(1))
-  );
-  Type oth_active = CppAD::CondExpGt(
-    raw_oth, Type(10.0), Type(0),
-    CppAD::CondExpLt(raw_oth, Type(-10.0), Type(0), Type(1))
-  );
-  Type da_dh = a_active * CppAD::CondExpLe(
-    ph, pk, dnorm(h, Type(0), Type(1), false), Type(0)
-  );
-  Type da_dk = a_active * CppAD::CondExpLe(
-    ph, pk, Type(0), dnorm(k, Type(0), Type(1), false)
-  );
-  Type doth_dh = oth_active * CppAD::CondExpLe(
-    ph, pk, Type(0), Type(1)
-  );
-  Type doth_dk = oth_active * CppAD::CondExpLe(
-    ph, pk, Type(1), Type(0)
-  );
-
-  Type sum_f = Type(0);
-  Type sum_da = Type(0);
-  Type sum_doth = Type(0);
-  Type sum_dr = Type(0);
+  Type acc = Type(0);
   for (int i = 0; i < 10; i++) {
     for (int side = -1; side <= 1; side += 2) {
-      Type c = (Type(1) + Type(side) * Type(gaussian_x20[i])) /
-        Type(2);
-      Type z = qnorm(a * c);
-      Type numerator = oth - r * z;
-      Type arg = numerator / sig;
-      Type phi_arg = dnorm(arg, Type(0), Type(1), false);
-      Type phi_z = dnorm(z, Type(0), Type(1), false);
-      Type weight = Type(gaussian_w20[i]);
-
-      sum_f += weight * pnorm(arg);
-      sum_da += weight * phi_arg * (-r / sig) * c / phi_z;
-      sum_doth += weight * phi_arg / sig;
-      sum_dr += weight * phi_arg * (
-        -z / sig - numerator * dsig_dr / sig2
-      );
+      Type z = mid + half * Type(side) * Type(gaussian_x20[i]);
+      Type A = (qb - rho * z) / sig;
+      Type B = (qbm - rho * z) / sig;
+      Type d = CppAD::CondExpGt(A + B, Type(0),
+                                pnorm(-B) - pnorm(-A),
+                                pnorm(A) - pnorm(B));
+      acc += Type(gaussian_w20[i]) *
+        dnorm(z, Type(0), Type(1), false) * d;
     }
   }
-
-  Type dvalue_da = sum_f / Type(2) + a * sum_da / Type(2);
-  Type dvalue_doth = a * sum_doth / Type(2);
-  Type dvalue_dr = a * sum_dr / Type(2);
-  vector<Type> gradient(3);
-  gradient(0) = dvalue_da * da_dh + dvalue_doth * doth_dh;
-  gradient(1) = dvalue_da * da_dk + dvalue_doth * doth_dk;
-  gradient(2) = dvalue_dr;
-  return gradient;
-}
-
-// A known-derivative primitive is thread safe and compresses the quadrature
-// to one tape operation. TMB differentiates its reverse rule for Hessians.
-TMB_ATOMIC_VECTOR_FUNCTION(gaussian_bvn_atomic,
-  1,
-  ty[0] = gaussian_bvn_quadrature(tx[0], tx[1], tx[2]);
-  ,
-  vector<Type> gradient = gaussian_bvn_quadrature_gradient(
-    tx[0], tx[1], tx[2]
-  );
-  px[0] = py[0] * gradient(0);
-  px[1] = py[0] * gradient(1);
-  px[2] = py[0] * gradient(2);
-)
-
-template<class Type>
-Type gaussian_bvn_cdf(Type h, Type k, Type r) {
-  CppAD::vector<Type> input(3);
-  input[0] = h;
-  input[1] = k;
-  input[2] = r;
-  return gaussian_bvn_atomic(input)[0];
+  return half * acc;
 }
 
 template<class Type>
@@ -580,9 +636,11 @@ Type objective_function<Type>::operator() () {
           nb2_cdf_pair(Y2_int(i), mu2, r2, b1, b1m, pmf2);
         }
 
+        // Every copula family now builds the cell probability directly rather
+        // than as a second difference of corner CDFs, so none of them can
+        // return a negative probability.  See frank_cell_prob(),
+        // clayton_cell_prob() and gaussian_cell_prob().
         Type p_obs = Type(0);
-        Type C_ab = Type(0), C_amb = Type(0);
-        Type C_abm = Type(0), C_ambm = Type(0);
         if (family == FAM_FRANK) {
           p_obs = frank_cell_prob(a1, a1m, pmf1, b1, b1m, pmf2, theta);
         } else if (family == FAM_GAUSSIAN) {
@@ -592,35 +650,10 @@ Type objective_function<Type>::operator() () {
                                  Type(1.0 - 1e-15), p);
             return qnorm(p);
           };
-          Type qa = safe_qnorm(a1);
-          Type qam = safe_qnorm(a1m);
-          Type qb = safe_qnorm(b1);
-          Type qbm = safe_qnorm(b1m);
-          C_ab   = gaussian_bvn_cdf(qa,   qb,  rho);
-          C_amb  = gaussian_bvn_cdf(qam,  qb,  rho);
-          C_abm  = gaussian_bvn_cdf(qa,   qbm, rho);
-          C_ambm = gaussian_bvn_cdf(qam,  qbm, rho);
+          p_obs = gaussian_cell_prob(safe_qnorm(a1), safe_qnorm(a1m),
+                                     safe_qnorm(b1), safe_qnorm(b1m), rho);
         } else {
-          auto clayton_cdf = [](Type u, Type v, Type th) -> Type {
-            // These exact-zero branches depend only on observed counts, so
-            // they remain valid on a non-retaped objective.
-            if (u == Type(0.0) || v == Type(0.0)) return Type(0.0);
-            u = CppAD::CondExpLt(u, Type(1e-15), Type(1e-15), u);
-            v = CppAD::CondExpLt(v, Type(1e-15), Type(1e-15), v);
-            Type inner = pow(u, -th) + pow(v, -th) - Type(1);
-            inner = CppAD::CondExpLt(inner, Type(1e-300),
-                                     Type(1e-300), inner);
-            return pow(inner, Type(-1.0) / th);
-          };
-          C_ab   = clayton_cdf(a1,   b1,  theta);
-          C_amb  = clayton_cdf(a1m,  b1,  theta);
-          C_abm  = clayton_cdf(a1,   b1m, theta);
-          C_ambm = clayton_cdf(a1m,  b1m, theta);
-        }
-        // Gaussian and Clayton still take the raw second difference; only
-        // Frank has the closed form that avoids it. See frank_cell_prob().
-        if (family != FAM_FRANK) {
-          p_obs = C_ab - C_amb - C_abm + C_ambm;
+          p_obs = clayton_cell_prob(a1, a1m, pmf1, b1, b1m, pmf2, theta);
         }
         p_obs = CppAD::CondExpLt(p_obs, Type(1e-300),
                                  Type(1e-300), p_obs);

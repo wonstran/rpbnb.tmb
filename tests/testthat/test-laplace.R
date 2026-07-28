@@ -82,10 +82,21 @@ test_that("laplace keeps draws meaningful for post-estimation averaging", {
   n <- 200
   x1 <- rnorm(n)
   dat <- data.frame(y1 = rpois(n, 2), y2 = rpois(n, 2), x1 = x1)
+  # max_workload is set explicitly rather than left to the default. The default
+  # auto-detects available memory, and .detect_available_memory_gib() is
+  # documented to degrade to NA on platforms where detection is unavailable --
+  # a sandbox that blocks subprocesses, an unrecognized OS -- at which point
+  # rpbnb_tmb_max_workload() warns and falls back to 8 GiB. That is supported
+  # behaviour, so leaving the default here would make expect_no_warning()
+  # reject the package's own documented fallback on restricted Windows/CI
+  # runners. This test is about draws surviving for post-estimation averaging,
+  # not about memory detection; pinning the budget keeps the warning guard
+  # meaningful for warnings that would actually indicate a defect.
   expect_no_warning(
     fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = dat, random_1 = "x1",
                          dependence = "independence", draws = 25,
-                         method = "laplace")
+                         method = "laplace",
+                         control = rpbnb_tmb_control(max_workload = Inf))
   )
   expect_identical(nrow(fit$rp_meta$Z1), 25L)
   expect_identical(fit$method, "laplace")
