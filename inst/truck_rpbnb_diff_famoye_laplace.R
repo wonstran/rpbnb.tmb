@@ -69,8 +69,40 @@ cat(sprintf("Optimizer: code=%d, message=%s\n",
 cat("sdreport positive-definite Hessian:",
     if (isTRUE(fit$sdreport$pdHess)) "yes" else "no", "\n")
 
+# ---- Model summary -----------------------------------------------------
 sep(); cat("MODEL SUMMARY\n"); sep()
-summary(fit)
+model_summary_output <- capture.output(summary(fit))
+cat(model_summary_output, sep = "\n")
+cat("\n")
 
+# ---- Fitted means (predict) ---------------------------------------------
+sep(); cat("FITTED MEANS (predict) -- first 6 observations\n"); sep()
+print(head(predict(fit)))
+
+# ---- Dependence -----------------------------------------------------------
 sep(); cat("DEPENDENCE (sdreport)\n"); sep()
 if (!is.null(fit$sdreport)) print(summary(fit$sdreport, "report"))
+
+# ---- Marginal effects (AME) ------------------------------------------------
+sep(); cat("AVERAGE MARGINAL EFFECTS (AME)\n"); sep()
+marginal_effects_output <- capture.output(
+  marginal_effects <- rpbnb_tmb_marginal_effects(fit, which = "both")
+)
+cat(marginal_effects_output, sep = "\n")
+cat("\n")
+
+# ---- Elasticities / semi-elasticities (AME) --------------------------------
+sep(); cat("ELASTICITIES / SEMI-ELASTICITIES (AME)\n"); sep()
+elasticities_output <- capture.output(
+  elasticities <- rpbnb_tmb_elasticities(fit, which = "both")
+)
+cat(elasticities_output, sep = "\n")
+cat("\n")
+
+# ---- Export requested results ----------------------------------------------
+results_path <- .write_truck_results_markdown(
+  model_summary = model_summary_output,
+  marginal_effects = marginal_effects_output,
+  elasticities = elasticities_output
+)
+cat("Results written to:", results_path, "\n")
