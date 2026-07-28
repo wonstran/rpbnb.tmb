@@ -251,6 +251,36 @@ test_that("sml and laplace degrade together on 8 random slopes, not just 1", {
   expect_gte(sum(precise), 4L)
 })
 
+test_that("laplace fits every copula family", {
+  skip_on_cran()
+  # Every Laplace test above uses famoye or independence, whose margins are
+  # dnbinom2. The copula families instead need the NB2 *CDF*, and the outer
+  # Laplace gradient differentiates the joint negative log-likelihood three
+  # times. Taking that CDF from TMB's pbeta() made all three copula families
+  # fail here -- nlminb stopped one or two steps in with "inner newton
+  # optimization failed during gradient calculation" and an NA/NaN gradient --
+  # because pbeta()'s third derivatives are NaN over wide regions of ordinary
+  # parameter values. See tests/testthat/test-fit-copula.R for the companion
+  # check that the replacement reproduces the NB2 mass function exactly.
+  sim <- simulate_rpbnb_tmb(
+    n = 300,
+    beta1 = c("(Intercept)" = 0.3, x1 = 0.35),
+    beta2 = c("(Intercept)" = 0.1, x1 = -0.25),
+    random_1 = list(x1 = list(sd = 0.35)),
+    dispersion = c(m1 = 0.4, m2 = 0.5),
+    dependence = copula("frank", par = 3), seed = 31
+  )
+  for (fam in c("frank", "normal", "kimeldorf")) {
+    fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = sim$data, random_1 = "x1",
+                         dependence = copula(fam), draws = 50, seed = 5,
+                         method = "laplace",
+                         control = rpbnb_tmb_control(n_cores = 1))
+    expect_true(is.finite(fit$logLik), label = fam)
+    expect_identical(fit$optimizer$convergence, 0L, label = fam)
+    expect_true(all(is.finite(fit$se)), label = fam)
+  }
+})
+
 test_that("laplace gives the same answer single- and multi-threaded", {
   skip_on_cran()
   # Mirrors tests/testthat/test-parallel.R: on a runtime whose TMB build

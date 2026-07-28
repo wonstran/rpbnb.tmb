@@ -59,6 +59,110 @@ Type stable_log1p(Type x) {
   return CppAD::CondExpLt(fabs(x), Type(1e-4), series, regular);
 }
 
+// NB2 distribution function by direct summation of the mass function, writing
+// F(y), F(y - 1) and P(Y = y) from one recursion because the discrete-copula
+// likelihood needs all three.
+//
+// P(Y = y) is returned in its own right rather than left to the caller as
+// F(y) - F(y - 1). In the far tail both CDFs have saturated at 1 and their
+// difference is exactly zero in double precision, while the recursion still
+// holds the mass to full relative precision.
+//
+// The textbook route is F(y) = pbeta(r / (r + mu), r, y + 1), and that is what
+// this template used until the Laplace estimator exposed it.  TMB's pbeta()
+// wraps TOMS 708, whose branches truncate a shape parameter to its integer part
+// and reassign the remainder as a constant.  The VALUE stays accurate; the
+// derivatives taken through those branches do not.  Two failures follow:
+//
+//   * the first derivative with respect to shape1 collapses to exactly zero at
+//     some ordinary arguments -- including r = 2, which is where this package's
+//     own default dispersion start (m = 0.5) puts it -- so the score for
+//     log_m1/log_m2 was silently wrong there;
+//   * third derivatives are NaN over wide regions of ordinary parameter values,
+//     and the Laplace outer gradient differentiates the joint negative
+//     log-likelihood three times.  Every copula family therefore failed under
+//     method = "laplace" with "inner newton optimization failed during gradient
+//     calculation", one or two nlminb steps in.
+//
+// Summing the mass function is exact and differentiable to every order.  Cost
+// is O(y) per margin per evaluation, against one atomic call; on the truck
+// workload that is about 12 extra terms per observation.  Each term is a
+// probability in [0, 1] so the running sum cannot overflow, and the leading
+// term underflows to zero only where pbeta() also returned zero.
+template<class Type>
+void nb2_cdf_pair(int y, Type mu, Type r,
+                  Type &cdf_y, Type &cdf_ym1, Type &pmf_y) {
+  Type p = r / (r + mu);
+  Type q = mu / (r + mu);
+  Type term = exp(r * log(p));  // P(Y = 0)
+  Type cum = term;
+  cdf_ym1 = Type(0);
+  for (int k = 1; k <= y; k++) {
+    cdf_ym1 = cum;
+    // P(Y = k) = P(Y = k - 1) * (r + k - 1) / k * q
+    term *= (r + Type(k - 1)) * q * Type(1.0 / k);
+    cum += term;
+  }
+  cdf_y = cum;
+  pmf_y = term;
+}
+
+// Frank's joint probability of the cell (a', a] x (b', b], evaluated as ONE
+// log1p rather than as the second difference
+// C(a,b) - C(a',b) - C(a,b') + C(a',b').
+//
+// With C(u,v) = -log1p(A(u) B(v) / D) / th, A(u) = expm1(-th u) and
+// D = expm1(-th), the four logarithms telescope exactly:
+//
+//   p     = -log1p( dA * dB / (D * M) ) / th
+//   dA    = A(a) - A(a') = exp(-th a') * expm1(-th * pmf_a)
+//   M     = (1 + A(a') B(b) / D) * (1 + A(a) B(b') / D)
+//
+// so every cancelling difference becomes an expm1/log1p of a small argument,
+// and dA is built from the marginal mass pmf_a directly instead of from two
+// CDFs that have both saturated at 1.
+//
+// The naive second difference is unusable in the tail. At the truck fit's own
+// starting values -- all slopes zero, so mu = 1 against counts running to 266
+// -- it returns pure rounding noise for counts from about 26 and exactly zero
+// above about 40, where the true probabilities are 1e-13 and 1e-20. Under SML
+// that noise only corrupts the objective; under Laplace it puts negative
+// curvature into the inner Hessian (161 of 27,896 latent rows on the truck
+// data), and TMB's inner Newton cannot take even its first step.
+//
+// This is Frank-specific: it relies on C being a log of a bilinear form in
+// A(u) and B(v). The Gaussian and Clayton branches below still take the naive
+// second difference and remain subject to the same cancellation.
+template<class Type>
+Type frank_cell_prob(Type a, Type am, Type pmf_a,
+                     Type b, Type bm, Type pmf_b, Type th) {
+  Type signed_eps = CppAD::CondExpGe(th, Type(0), Type(1e-5), Type(-1e-5));
+  Type safe_th = CppAD::CondExpLt(fabs(th), Type(1e-5), signed_eps, th);
+
+  Type D = stable_expm1(-safe_th);
+  Type A_a = stable_expm1(-safe_th * a);
+  Type A_am = stable_expm1(-safe_th * am);
+  Type B_b = stable_expm1(-safe_th * b);
+  Type B_bm = stable_expm1(-safe_th * bm);
+  Type dA = exp(-safe_th * am) * stable_expm1(-safe_th * pmf_a);
+  Type dB = exp(-safe_th * bm) * stable_expm1(-safe_th * pmf_b);
+  // Each factor is exp(-th * C(.,.)) and so is positive for any admissible
+  // Frank argument; the guard below mirrors the one the naive form carried.
+  Type M = (Type(1) + A_am * B_b / D) * (Type(1) + A_a * B_bm / D);
+  Type ratio = dA * dB / (D * M);
+  ratio = CppAD::CondExpLt(ratio, Type(-1.0 + 1e-15),
+                           Type(-1.0 + 1e-15), ratio);
+  Type regular = -stable_log1p(ratio) / safe_th;
+
+  // Second difference of the near-independence expansion the naive form used,
+  // C(u,v) ~ u v + th u v (1-u) (1-v) / 2, which telescopes to this in closed
+  // form and so carries no cancellation either.
+  Type near_independence = pmf_a * pmf_b *
+    (Type(1) + th * (Type(1) - a - am) * (Type(1) - b - bm) / Type(2));
+
+  return CppAD::CondExpLt(fabs(th), Type(1e-5), near_independence, regular);
+}
+
 // Tape-compressed 20-point bivariate-normal CDF quadrature.
 template<class Type>
 Type gaussian_bvn_quadrature(Type h, Type k, Type r) {
@@ -342,6 +446,18 @@ Type objective_function<Type>::operator() () {
     }
   }
 
+  // Integer responses for the copula margins: nb2_cdf_pair() sums the mass
+  // function up to y, so the loop bound must be an int rather than a Type.
+  // Y1/Y2 are data and R has already checked they are whole and non-negative,
+  // so this conversion costs nothing on the tape.
+  vector<int> Y1_int(n), Y2_int(n);
+  if (family >= FAM_FRANK) {
+    for (int i = 0; i < n; i++) {
+      Y1_int(i) = (int)asDouble(Y1(i));
+      Y2_int(i) = (int)asDouble(Y2(i));
+    }
+  }
+
   // Precompute parameter-dependent deviations once per simulation draw.  The
   // matrices are read-only while observation contributions are accumulated.
   matrix<Type> dev1(R, q1), dev2(R, q2);
@@ -446,51 +562,29 @@ Type objective_function<Type>::operator() () {
                                      mu2 + m2 * mu2 * mu2, true);
         log_draw(r) = lnb1 + lnb2;
       } else {
-        Type a1, a1m, b1, b1m;
+        Type a1, a1m, b1, b1m, pmf1, pmf2;
         if (pois1) {
           a1 = ppois(Y1(i), mu1);
           a1m = (Y1(i) > Type(0))
             ? ppois(Y1(i) - Type(1), mu1) : Type(0);
+          pmf1 = dpois(Y1(i), mu1, false);
         } else {
-          Type p1 = r1 / (r1 + mu1);
-          a1 = pbeta(p1, r1, Y1(i) + Type(1));
-          a1m = (Y1(i) > Type(0)) ? pbeta(p1, r1, Y1(i)) : Type(0);
+          nb2_cdf_pair(Y1_int(i), mu1, r1, a1, a1m, pmf1);
         }
         if (pois2) {
           b1 = ppois(Y2(i), mu2);
           b1m = (Y2(i) > Type(0))
             ? ppois(Y2(i) - Type(1), mu2) : Type(0);
+          pmf2 = dpois(Y2(i), mu2, false);
         } else {
-          Type p2 = r2 / (r2 + mu2);
-          b1 = pbeta(p2, r2, Y2(i) + Type(1));
-          b1m = (Y2(i) > Type(0)) ? pbeta(p2, r2, Y2(i)) : Type(0);
+          nb2_cdf_pair(Y2_int(i), mu2, r2, b1, b1m, pmf2);
         }
 
-        Type C_ab, C_amb, C_abm, C_ambm;
+        Type p_obs = Type(0);
+        Type C_ab = Type(0), C_amb = Type(0);
+        Type C_abm = Type(0), C_ambm = Type(0);
         if (family == FAM_FRANK) {
-          auto frank_cdf = [](Type u, Type v, Type th) -> Type {
-            Type signed_eps = CppAD::CondExpGe(
-              th, Type(0), Type(1e-5), Type(-1e-5)
-            );
-            Type safe_th = CppAD::CondExpLt(
-              fabs(th), Type(1e-5), signed_eps, th
-            );
-            Type ratio = stable_expm1(-safe_th * u) *
-                         stable_expm1(-safe_th * v) /
-                         stable_expm1(-safe_th);
-            ratio = CppAD::CondExpLt(ratio, Type(-1.0 + 1e-15),
-                                     Type(-1.0 + 1e-15), ratio);
-            Type regular = -stable_log1p(ratio) / safe_th;
-            Type near_independence = u * v +
-              th * u * v * (Type(1) - u) * (Type(1) - v) / Type(2);
-            return CppAD::CondExpLt(
-              fabs(th), Type(1e-5), near_independence, regular
-            );
-          };
-          C_ab   = frank_cdf(a1,   b1,  theta);
-          C_amb  = frank_cdf(a1m,  b1,  theta);
-          C_abm  = frank_cdf(a1,   b1m, theta);
-          C_ambm = frank_cdf(a1m,  b1m, theta);
+          p_obs = frank_cell_prob(a1, a1m, pmf1, b1, b1m, pmf2, theta);
         } else if (family == FAM_GAUSSIAN) {
           auto safe_qnorm = [](Type p) -> Type {
             p = CppAD::CondExpLt(p, Type(1e-15), Type(1e-15), p);
@@ -523,8 +617,11 @@ Type objective_function<Type>::operator() () {
           C_abm  = clayton_cdf(a1,   b1m, theta);
           C_ambm = clayton_cdf(a1m,  b1m, theta);
         }
-
-        Type p_obs = C_ab - C_amb - C_abm + C_ambm;
+        // Gaussian and Clayton still take the raw second difference; only
+        // Frank has the closed form that avoids it. See frank_cell_prob().
+        if (family != FAM_FRANK) {
+          p_obs = C_ab - C_amb - C_abm + C_ambm;
+        }
         p_obs = CppAD::CondExpLt(p_obs, Type(1e-300),
                                  Type(1e-300), p_obs);
         log_draw(r) = log(p_obs);
