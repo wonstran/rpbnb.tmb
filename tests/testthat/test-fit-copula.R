@@ -219,10 +219,13 @@ test_that("Gaussian's strip integral matches adaptive quadrature", {
   # gaussian_cell_prob() replaces the second difference of four bivariate
   # normal CDFs with the single conditional strip integral
   #   int_{q(a')}^{q(a)} phi(z) [Phi((q(b) - rho z)/s) - Phi((q(b') - rho z)/s)] dz
-  # evaluated on a fixed 20-point Gauss-Legendre rule. The reference here is
-  # stats::integrate() on the same integral -- adaptive Gauss-Kronrod, a
+  # evaluated on a five-panel 16-point Gauss-Legendre rule. The reference here
+  # is stats::integrate() on the same integral -- adaptive Gauss-Kronrod, a
   # different algorithm entirely -- so this checks the rule is fine enough,
   # not merely that two copies of the same code agree.
+  #
+  # This test covers moderate dependence only; see the high-correlation test
+  # below for the regime where the panel layout is what earns its keep.
   set.seed(9)
   n <- 150
   x1 <- rnorm(n)
@@ -346,4 +349,223 @@ test_that("Clayton copula fit converges", {
   fit <- fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = dat,
                         dependence = copula("kimeldorf"), draws = 150)
   expect_true(is.finite(fit$logLik))
+})
+
+test_that("Gaussian stays accurate at strong correlation", {
+  skip_on_cran()
+  # Regression for the defect that one fixed rule across the whole quantile
+  # interval could not see. The integrand is a smoothed indicator of
+  # [q(b')/rho, q(b)/rho] whose edges have width sqrt(1-rho^2)/|rho|; as
+  # |rho| -> 1 that collapses while the interval does not, so the nodes step
+  # over the plateau entirely. The previous rule returned 1.7e-25 for a cell
+  # whose true probability is 0.0401 and lost 53.8 log-likelihood units on a
+  # single observation.
+  #
+  # rho = 0.9999 is INSIDE the supported domain: .classify_boundary() in
+  # R/inference.R marks a Gaussian estimate as a boundary only once tanh() has
+  # actually saturated, so this is reported as an ordinary interior estimate.
+  #
+  # The margins are built comonotonically so the cells stay on the diagonal and
+  # keep comfortably representable probabilities even at rho = 0.9999 -- a
+  # reference sitting near the rounding floor would prove nothing, which is why
+  # the moderate-dependence test above stops at z_dep = 1.
+  n <- 60
+  m1 <- 0.4; m2 <- 0.5
+  u <- seq(0.03, 0.97, length.out = n)
+  mu1 <- 3; mu2 <- 6
+  dat <- data.frame(
+    y1 = stats::qnbinom(u, size = 1 / m1, mu = mu1),
+    y2 = stats::qnbinom(u, size = 1 / m2, mu = mu2)
+  )
+  fit <- fit_rpbnb_tmb(y1 ~ 1, y2 ~ 1, data = dat,
+                       dependence = copula("normal"), draws = 2, keep = "full",
+                       control = rpbnb_tmb_control(iterlim = 1, n_cores = 1))
+
+  safe_qnorm <- function(p) stats::qnorm(pmin(pmax(p, 1e-15), 1 - 1e-15))
+  cell <- function(qa, qam, qb, qbm, rho) {
+    if (qa <= qam) return(0)
+    s <- sqrt(1 - rho^2)
+    stats::integrate(
+      function(z) stats::dnorm(z) *
+        (stats::pnorm((qb - rho * z) / s) - stats::pnorm((qbm - rho * z) / s)),
+      lower = qam, upper = qa, rel.tol = 1e-12, subdivisions = 2000L
+    )$value
+  }
+  qa  <- safe_qnorm(stats::pnbinom(dat$y1,     size = 1 / m1, mu = mu1))
+  qam <- safe_qnorm(stats::pnbinom(dat$y1 - 1, size = 1 / m1, mu = mu1))
+  qb  <- safe_qnorm(stats::pnbinom(dat$y2,     size = 1 / m2, mu = mu2))
+  qbm <- safe_qnorm(stats::pnbinom(dat$y2 - 1, size = 1 / m2, mu = mu2))
+
+  for (z_dep in c(2, 3, 4, 5)) {
+    rho <- tanh(z_dep)
+    p <- mapply(cell, qa, qam, qb, qbm, MoreArgs = list(rho = rho))
+    # Guard the premise: a reference near the rounding floor proves nothing.
+    expect_gt(min(p), 1e-8)
+    par <- c(log(mu1), log(mu2), log(m1), log(m2), z_dep)
+    expect_equal(as.numeric(fit$obj$fn(par)), -sum(log(p)),
+                 tolerance = 1e-5,
+                 label = sprintf("z_dep = %g (rho = %.6f)", z_dep, rho))
+  }
+})
+
+test_that("Clayton reaches its comonotonic limit at strong dependence", {
+  skip_on_cran()
+  # Regression for the 1e15 cap on the factored ratios. The cap was applied
+  # before the result raises the ratio to the power -1/theta, so it discarded
+  # |k| * (log x - 34.5) in the exponent: at z_dep = 5 the exact symmetric cell
+  # is 0.29077 and the capped form returned 0.15036. Clayton tends to the
+  # comonotonic copula as theta grows, so this cell must APPROACH P(Y = 1);
+  # the cap instead drove it to 2.4e-10 at z_dep = 20, reversing the
+  # likelihood's behaviour across a region R/inference.R reports as interior.
+  mu <- 1; m <- 0.5; sz <- 1 / m
+  dat <- data.frame(y1 = 1L, y2 = 1L)
+  fit <- fit_rpbnb_tmb(y1 ~ 1, y2 ~ 1, data = dat,
+                       dependence = copula("kimeldorf"), draws = 2,
+                       keep = "full",
+                       control = rpbnb_tmb_control(iterlim = 1, n_cores = 1))
+  A  <- stats::pnbinom(1, size = sz, mu = mu)
+  Am <- stats::pnbinom(0, size = sz, mu = mu)
+  clayton <- function(u, v, th) (u^(-th) + v^(-th) - 1)^(-1 / th)
+  got <- function(z_dep) {
+    exp(-as.numeric(fit$obj$fn(c(log(mu), log(mu), log(m), log(m), z_dep))))
+  }
+
+  # Exact four-corner comparison where double precision still supports one.
+  for (z_dep in c(1, 2, 5)) {
+    th <- exp(z_dep)
+    exact <- clayton(A, A, th) - 2 * clayton(Am, A, th) + clayton(Am, Am, th)
+    expect_gt(exact, 1e-8)          # guard the reference
+    expect_equal(got(z_dep), exact, tolerance = 1e-10,
+                 label = sprintf("z_dep = %g", z_dep))
+  }
+
+  # Beyond z_dep ~ 7 the four-corner reference cancels to exactly 0 in double
+  # precision, so the limit itself becomes the only usable check.
+  comonotonic <- stats::dnbinom(1, size = sz, mu = mu)
+  expect_equal(got(20), comonotonic, tolerance = 1e-7)
+  # ... and it must be approached from below, not crossed or collapsed.
+  seq_p <- vapply(c(5, 8, 11, 14, 17, 20), got, numeric(1))
+  expect_true(all(diff(seq_p) > 0))
+  expect_true(all(seq_p < comonotonic))
+})
+
+test_that("Clayton's taped objective does not depend on the starting values", {
+  skip_on_cran()
+  # Regression for axis-branch selection. The branches were chosen by
+  # asDouble(am) == 0.0, which resolves when the tape is BUILT, on a
+  # parameter-dependent CDF that underflows to exactly zero for positive counts
+  # in ordinary regions -- P(Y <= 0) at mu = r = 2000 is 0.5^2000. A tape built
+  # at such a start kept the y = 0 axis formula permanently, so the same
+  # parameter vector scored 2.256 or 1.592 nats depending only on where its
+  # tape had been made. They are now selected from the observed counts.
+  mk <- function(mu_tape, m_tape) {
+    data <- .build_tmb_data(
+      Y1 = 1, Y2 = 1,
+      X1 = cbind("(Intercept)" = 1), X2 = cbind("(Intercept)" = 1),
+      rand_idx1 = integer(0), rand_idx2 = integer(0),
+      Z1 = matrix(0.5, 1L, 1L), Z2 = matrix(0.5, 1L, 1L),
+      dist1 = 0L, dist2 = 0L, sign1 = 1L, sign2 = 1L,
+      family_code = 3L, pois1 = FALSE, pois2 = FALSE,
+      lamLo = 0, lamHi = 0, est_method = 0L)
+    pars <- list(beta1 = log(mu_tape), beta2 = log(1),
+                 log_sd1 = numeric(0), log_sd2 = numeric(0),
+                 log_m1 = log(m_tape), log_m2 = log(0.5), z_dep = 0,
+                 u1 = matrix(0, 1L, 0L), u2 = matrix(0, 1L, 0L))
+    .make_rpbnb_tmb_object(data = data, parameters = pars,
+                           map = list(), n_cores = 1L)$obj
+  }
+  # The extreme tape point is chosen so the first margin's lower CDF underflows.
+  expect_identical(stats::pnbinom(0, size = 2000, mu = 2000), 0)
+
+  target <- c(beta1 = log(1), beta2 = log(1),
+              log_m1 = log(0.5), log_m2 = log(0.5), z_dep = 0)
+  default_tape <- mk(1, 0.5)$fn(target)
+  extreme_tape <- mk(2000, 1 / 2000)$fn(target)
+  expect_equal(as.numeric(extreme_tape), as.numeric(default_tape),
+               tolerance = 1e-12)
+})
+
+test_that("Clayton stays finite and accurate where the CDF saturates", {
+  skip_on_cran()
+  # Regression for the defect the strong-dependence rewrite introduced. Once
+  # the NB2 CDF saturates, log F(y) and log F(y - 1) are equal to the last
+  # bit, so building log(u/u') as their difference gives log(0) = -Inf and
+  # NaN derivatives. On the truck margins at mu = 1 that is every count from
+  # y = 70 up -- 197 of them -- and the difference is already 32% wrong at
+  # y = 69 before it collapses. The ratio is therefore built from the marginal
+  # mass, which nb2_cdf_pair() carries to full relative precision.
+  #
+  # This checks the GRADIENT and HESSIAN, not just the value: the -Inf left
+  # the objective finite and only poisoned the derivatives, which is why the
+  # existing value-only tail test passed while the Laplace fit died at its
+  # first inner Newton step.
+  counts <- c(0, 1, 5, 40, 69, 70, 100, 180, 266)
+  dat <- data.frame(y1 = counts, y2 = rev(counts))   # mixed, incl. deep tail
+  fit <- fit_rpbnb_tmb(y1 ~ 1, y2 ~ 1, data = dat,
+                       dependence = copula("kimeldorf"), draws = 2,
+                       keep = "full",
+                       control = rpbnb_tmb_control(iterlim = 1, n_cores = 1))
+
+  for (z_dep in c(-1, 0, 1, 3)) {
+    par <- c(0, 0, log(0.5), log(0.5), z_dep)   # mu = 1, m = 0.5
+    expect_true(is.finite(as.numeric(fit$obj$fn(par))),
+                label = sprintf("value at z_dep = %g", z_dep))
+    expect_true(all(is.finite(as.numeric(fit$obj$gr(par)))),
+                label = sprintf("gradient at z_dep = %g", z_dep))
+    expect_true(all(is.finite(as.numeric(fit$obj$he(par)))),
+                label = sprintf("hessian at z_dep = %g", z_dep))
+  }
+
+  # Value check in the deep tail against the leading term of the Taylor
+  # expansion, which is independent of the bracket algebra being tested:
+  #
+  #   (1+x+y)^k - (1+x)^k - (1+y)^k + 1 = k(k-1)xy + O(3)
+  #
+  # This is the check that matters most here, because the two terms of the
+  # return are -k*xy and k^2*xy -- the same order. An implementation that
+  # loses either one still produces a positive, smooth, finite cell
+  # probability, wrong by a factor of k/(k-1). Writing du as
+  # log(1+x+y) - log1p(x) - log1p(y) does exactly that: all three are O(x+y)
+  # and their difference is O(xy), so it underflows to zero.
+  #
+  # A whole-formula R reference is deliberately NOT used. Written with x and y
+  # in linear space it goes negative from y = 40 on, and written in log space
+  # it just restates the implementation. The asymptotic is a different
+  # expression arrived at a different way.
+  lcdf3 <- function(y, mu, r) {
+    lp <- log(r) - log(r + mu); lq <- log(mu) - log(r + mu)
+    lt <- r * lp; lcum <- lt; lm1 <- lt
+    for (k in seq_len(y)) {
+      lm1 <- lcum
+      lt <- lt + log(r + k - 1) - log(k) + lq
+      m <- max(lcum, lt); lcum <- m + log1p(exp(min(lcum, lt) - m))
+    }
+    c(lcum, lm1, lt)
+  }
+  asym_logp <- function(y1, y2, th) {
+    A <- lcdf3(y1, 1, 2); B <- lcdf3(y2, 1, 2); k <- -1 / th
+    La <- -th * A[1]; Lb <- -th * B[1]; M <- max(La, Lb)
+    ls00 <- M + log(exp(La - M) + exp(Lb - M) - exp(-M))
+    lx <- function(v) {
+      LR <- log1p(exp(v[3] - v[2]))
+      -th * v[2] + log(-expm1(-th * LR)) - ls00
+    }
+    k * ls00 + log(k * (k - 1)) + lx(A) + lx(B)
+  }
+  for (z_dep in c(-1, 1)) {
+    for (y in c(69, 100, 180, 266)) {
+      one <- data.frame(y1 = y, y2 = y)
+      f1 <- fit_rpbnb_tmb(y1 ~ 1, y2 ~ 1, data = one,
+                          dependence = copula("kimeldorf"), draws = 2,
+                          keep = "full",
+                          control = rpbnb_tmb_control(iterlim = 1,
+                                                      n_cores = 1))
+      got <- -as.numeric(f1$obj$fn(c(0, 0, log(0.5), log(0.5), z_dep)))
+      ref <- asym_logp(y, y, exp(z_dep))
+      # Not vacuous only if the cell really is in the saturated tail.
+      expect_lt(ref, -100)
+      expect_equal(got, ref, tolerance = 1e-9,
+                   label = sprintf("log p at y = %d, z_dep = %g", y, z_dep))
+    }
+  }
 })

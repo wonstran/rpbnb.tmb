@@ -57,10 +57,22 @@ test_that("shipped truck examples remain valid R syntax", {
   # turns this into a release-check failure. system.file() resolves the source
   # inst/ under devtools::load_all() as well, so the assertion stays live in
   # both development and installed-package testing.
-  scripts <- c(
-    "truck_rpbnb_diff_famoye_dense.R",
-    "truck_rpbnb_diff_kimeldorf_laplace.R"
-  )
+  # Discovered rather than listed. A hand-written list silently shrinks its own
+  # coverage: this test previously named two of the four shipped truck scripts
+  # while claiming in its title to cover them all, so a syntax regression in
+  # truck_rpbnb_diff_famoye_laplace.R or truck_rpbnb_diff_frank_laplace.R would
+  # have gone unnoticed. The pattern is anchored and narrow so it cannot start
+  # sweeping up unrelated files.
+  root <- system.file(package = "rpbnb.tmb", mustWork = TRUE)
+  scripts <- list.files(root, pattern = "^truck_[A-Za-z0-9_]+\\.R$")
+  # Guard the discovery itself: if the pattern or the layout ever stops
+  # matching, this fails loudly instead of vacuously passing over zero files.
+  expect_gte(length(scripts), 4L)
+  expect_true(all(c("truck_rpbnb_diff_famoye_dense.R",
+                    "truck_rpbnb_diff_famoye_laplace.R",
+                    "truck_rpbnb_diff_frank_laplace.R",
+                    "truck_rpbnb_diff_kimeldorf_laplace.R") %in% scripts))
+
   for (nm in scripts) {
     script <- system.file(nm, package = "rpbnb.tmb", mustWork = TRUE)
     # parse() raises on invalid syntax, and its own message names the file, so
