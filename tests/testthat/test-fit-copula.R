@@ -312,6 +312,102 @@ test_that("Gaussian cell probabilities stay non-negative in the far tail", {
   }
 })
 
+test_that("Gaussian keeps the off-diagonal cells at strong correlation", {
+  skip_on_cran()
+  # Regression for the panel WINDOW, as distinct from the panel layout the test
+  # above covers. gaussian_cell_prob() used to clip the quantile interval to
+  # [clo - 10 e, chi + 10 e], the region where the inner bracket is not
+  # negligible, and then floor the width at zero. For a cell whose interval
+  # lies entirely outside that region -- y1 far into its right tail while y2
+  # sits near its median, which under strong POSITIVE dependence is exactly the
+  # discordant case -- every panel collapsed and the function returned 0. The
+  # caller floors 0 to 1e-300, so a cell whose true probability is 1e-30
+  # contributed -log(1e-300) = 690.78 nats instead of 69, AND, because a clamp
+  # is flat, contributed exactly zero gradient.
+  #
+  # Under SML the draw average dilutes both errors. Under method = "laplace"
+  # there is one evaluation point per observation, so such an observation is a
+  # constant in the joint objective: it informs neither the inner Newton nor
+  # the outer score, the Hessian at the optimum loses rank, and sdreport()
+  # returns NaN standard errors. On the truck data this hit 74 to 266 of the
+  # 439 distinct cells once |rho| passed 0.9.
+  #
+  # The cells below are built deliberately off the diagonal so the window is
+  # what fails, not the qnorm clamp: the assertion on qa > qam is the premise
+  # that no cell is lost the OTHER way, to a saturated NB2 CDF, which the strip
+  # integral genuinely cannot recover.
+  #
+  # y1 stops at 25 for that reason. Its upper tail mass at mu = 1, m = 0.5 is
+  # 7.2e-12, three orders clear of the 1e-15 clamp. One step further, y1 = 34,
+  # has 4.9e-16 and falls UNDER it: the template and stats::pnbinom() then
+  # disagree about q(a) itself and the comparison stops measuring quadrature.
+  # That single cell was worth 6 to 7 nats on its own.
+  mu <- 1; m <- 0.5
+  dat <- data.frame(
+    y1 = rep(c(0, 1, 2, 3, 5, 8, 12, 16, 20, 25), each = 6),
+    y2 = rep(c(0, 1, 2, 3, 5, 9), times = 10)
+  )
+  safe_qnorm <- function(p) stats::qnorm(pmin(pmax(p, 1e-15), 1 - 1e-15))
+  qa  <- safe_qnorm(stats::pnbinom(dat$y1,     size = 1 / m, mu = mu))
+  qam <- safe_qnorm(stats::pnbinom(dat$y1 - 1, size = 1 / m, mu = mu))
+  qb  <- safe_qnorm(stats::pnbinom(dat$y2,     size = 1 / m, mu = mu))
+  qbm <- safe_qnorm(stats::pnbinom(dat$y2 - 1, size = 1 / m, mu = mu))
+  expect_true(all(qa > qam))  # premise: nothing lost to the qnorm clamp
+
+  fit <- fit_rpbnb_tmb(y1 ~ 1, y2 ~ 1, data = dat,
+                       dependence = copula("normal"), draws = 2, keep = "full",
+                       control = rpbnb_tmb_control(iterlim = 1, n_cores = 1))
+
+  # The reference takes the SAME tail flip as the template. Written the naive
+  # way, Phi((qb - rho z)/s) - Phi((qbm - rho z)/s) is 1 - 1 = 0 in double
+  # precision wherever both arguments are large and positive, which is most of
+  # this cell set; a reference that cancels would report the template as 3.7x
+  # too large and hide the defect behind an apparent template error.
+  bracket <- function(z, qb, qbm, rho, s) {
+    A <- (qb - rho * z) / s
+    B <- (qbm - rho * z) / s
+    flip <- A + B > 0
+    stats::pnorm(ifelse(flip, -B, A)) - stats::pnorm(ifelse(flip, -A, B))
+  }
+  cell <- function(qa, qam, qb, qbm, rho) {
+    s <- sqrt(1 - rho^2)
+    stats::integrate(function(z) stats::dnorm(z) * bracket(z, qb, qbm, rho, s),
+                     lower = qam, upper = qa,
+                     rel.tol = 1e-12, subdivisions = 2000L)$value
+  }
+  # Independent rule, so the guard below is not the reference checking itself.
+  simpson <- function(qa, qam, qb, qbm, rho) {
+    s <- sqrt(1 - rho^2)
+    n <- 4001L
+    z <- seq(qam, qa, length.out = n)
+    fv <- stats::dnorm(z) * bracket(z, qb, qbm, rho, s)
+    sum(c(1, rep(c(4, 2), length.out = n - 2L), 1) * fv) * (z[2] - z[1]) / 3
+  }
+
+  for (z_dep in c(-1.472, 1.472)) {  # rho = -/+0.9, both signs truncate
+    rho <- tanh(z_dep)
+    p <- mapply(cell, qa, qam, qb, qbm, MoreArgs = list(rho = rho))
+    q <- mapply(simpson, qa, qam, qb, qbm, MoreArgs = list(rho = rho))
+    # Guard the premise: the reference has to be a reference, and every cell
+    # has to sit far enough above the 1e-300 floor that the floor is not what
+    # is being measured.
+    expect_lt(max(abs(p / q - 1)), 1e-6)
+    # The smallest cell here is 2.6e-113 (at rho = -0.9; 7.1e-56 at +0.9).
+    # Small, but two independent rules agree on it to 1e-6 and it clears the
+    # 1e-300 floor by 187 orders of magnitude, so what follows measures the
+    # quadrature, not the clamp.
+    expect_gt(min(p), 1e-250)
+
+    par <- c(log(mu), log(mu), log(m), log(m), z_dep)
+    # Absolute, in nats, because the quantity under test IS a log-likelihood
+    # error. The window zeroed 23 of these 60 cells at rho = -0.9 and 6 at
+    # +0.9, for 12,956 and 3,572 nats; without it the agreement is at the
+    # rounding level rather than merely improved.
+    expect_lt(abs(as.numeric(fit$obj$fn(par)) + sum(log(p))), 0.05,
+              label = sprintf("z_dep = %g (rho = %.6f)", z_dep, rho))
+  }
+})
+
 test_that("Frank copula fit converges", {
   skip_on_cran()
   set.seed(1)

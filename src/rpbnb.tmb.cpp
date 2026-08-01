@@ -40,13 +40,13 @@ static const double gauss_w16[8] = {
 };
 // Panel geometry, in units of the conditional SD divided by |rho| -- the width
 // of the transition the integrand makes at each edge. GAUSS_EDGE brackets each
-// edge; GAUSS_WINDOW bounds the region where the integrand is not negligible.
-// Both are measured, not guessed: at GAUSS_WINDOW = 6 the window truncates
-// real mass and the worst-case relative error over a 3,600-cell grid is 1.0,
-// while 10 and 14 agree to every digit; GAUSS_EDGE = 4 with 16 nodes holds the
-// worst case to 7e-7 out to |rho| = 0.99999.
+// edge, and is measured rather than guessed: 4 with 16 nodes holds the
+// worst-case relative error to 7e-7 out to |rho| = 0.99999.
+//
+// There was a companion GAUSS_WINDOW that also CLIPPED the interval to the
+// region where the integrand is not negligible. That is deleted rather than
+// retuned; see gaussian_cell_prob() for why no finite value of it is safe.
 #define GAUSS_EDGE 4.0
-#define GAUSS_WINDOW 10.0
 
 // CppAD in the supported TMB toolchain does not overload std::expm1/log1p.
 // These series-backed equivalents retain precision and AD derivatives near 0.
@@ -390,7 +390,8 @@ Type clayton_cell_prob(Type log_a, Type log_am, Type log_pmf_a,
 // NEGATIVE -- the negative-curvature source that stops TMB's inner Newton
 // under method = "laplace".  The strip integral below leaves 245 floored
 // cells and no negative ones, which lowers the objective at those starting
-// values from about 334,000-432,000 to about 196,000-203,000.
+// values from about 334,000-432,000 to 195,737-203,352 over
+// z_dep in {-0.55, 0.2, 0.7}.
 //
 // Conditioning the bivariate normal on the first margin gives
 //
@@ -429,18 +430,62 @@ Type clayton_cell_prob(Type log_a, Type log_am, Type log_pmf_a,
 // accurate.  This is inside the supported domain: R/inference.R reports
 // rho = 0.9999 as an interior estimate, not a boundary.
 //
-// So the interval is first cut down to the window where the integrand is not
-// negligible, then split at +/- GAUSS_EDGE around each edge centre, giving
+// So the interval is split at +/- GAUSS_EDGE around each edge centre, giving
 // five panels each smooth on its own scale.  The cut points are forced
 // monotone by a running maximum, which both keeps every panel width
 // non-negative (a negative width would subtract mass) and lets panels
-// collapse to nothing when the plateau is narrower than the brackets or when
-// the window clips an edge away.  The union of the panels is exactly the
-// retained interval regardless of how many collapse.
+// collapse to nothing when the plateau is narrower than the brackets.  The
+// union of the panels is exactly [q(a'), q(a)] regardless of how many
+// collapse.
 //
-// Dividing by rho needs |rho| bounded away from zero; the floor is set where
-// the resulting window is already far wider than any quantile interval, so
-// the clipping makes the choice of floor immaterial.
+// What the panels must NOT do is shorten that interval.  An earlier version
+// also clipped it to [clo - 10 e, chi + 10 e], the region where the bracket is
+// not negligible, on the reasoning that the integrand is worthless outside.
+// It is not worthless, it is merely small, and the clip did not make it small
+// -- it made it ZERO, because a clipped-away interval left every panel with a
+// width the monotone pass then floored at nothing.  The cells whose quantile
+// interval falls outside that region are the DISCORDANT ones: y1 far into its
+// right tail while y2 sits near its median, under strong positive rho.  Rare,
+// not impossible, and the truck data has hundreds -- 74 to 266 of its 439
+// distinct cells once |rho| passes 0.9, and 1 even at rho = -0.5, with true
+// probabilities running down to 1e-30.  Each was returned as 0, floored by the
+// caller to 1e-300, and so contributed 690.78 nats instead of 69: over the
+// truck cell grid that is 617 nats of pure quadrature error at rho = -0.5,
+// 43,298 at rho = 0.9 and 119,733 at rho = -0.9.
+//
+// The gradient mattered more than the value.  A clamp is flat, so those
+// observations contributed exactly zero score.  Under SML the draw average
+// dilutes that; under method = "laplace" there is one evaluation point per
+// observation, so such an observation is a constant in the joint objective --
+// it informs neither the inner Newton nor the outer score, the Hessian at the
+// optimum loses rank, and sdreport() returns NaN standard errors for the
+// affected parameters.  That was the whole of the "Gaussian + Laplace gives
+// NA" report.
+//
+// No larger window fixes this, which is why the constant is gone rather than
+// raised: the clip bites whenever the interval and the transition region are
+// disjoint, and widening the region only moves which cells qualify.  Keeping
+// the full interval costs nothing at moderate dependence -- the outer panels
+// are then wide but carry a monotone integrand with no edge in them, and the
+// worst-case relative error over the truck cell grid is 8e-10 out to
+// |rho| = 0.9, against 1.0 (total loss) for the clipped form.
+//
+// It is not free at the top of the range: at |rho| >= 0.99 those wide outer
+// panels are resolved on the transition scale but not on phi's own, and the
+// truck grid loses 1.6 nats at rho = 0.99, 17.2 at 0.999 and 40.7 at -0.999,
+// on cells whose probability is around 1e-30.  Adding cut points at fixed z
+// -- -2, 0, 2 is enough -- takes those to 0.0, 0.5 and 0.9, at the cost of
+// three more panels on every cell at every rho, since a collapsed panel still
+// occupies the tape.  Not taken: 40 nats against 119,733 is not the trade the
+// hot loop of the Laplace inner Newton should be paying for, and it buys
+// nothing at all at rho = 0.9999, where the residual (5.1 nats) comes from the
+// margins rather than the panels.
+//
+// Dividing by rho needs |rho| bounded away from zero.  The floor only affects
+// where the cut points land, and at |rho| = 1e-6 they land 1e6 quantiles away
+// from any interval, so every one of them clamps to an endpoint and a single
+// panel spans [q(a'), q(a)] -- which is right, because at rho = 0 the bracket
+// is constant in z and one panel resolves it exactly.
 //
 // Remaining limitation, deliberately not papered over: when a and a' are close
 // enough that the safe_qnorm() clamp maps both to the same point (245 of the
@@ -471,9 +516,10 @@ Type gaussian_cell_prob(Type qa, Type qam, Type qb, Type qbm, Type rho) {
   Type clo = vmin(c1, c2);
   Type chi = vmax(c1, c2);
 
-  Type lo = vmax(qam, clo - Type(GAUSS_WINDOW) * edge);
-  Type hi = vmin(qa, chi + Type(GAUSS_WINDOW) * edge);
-  hi = vmax(hi, lo);                       // empty window => every panel empty
+  // The whole quantile interval, never a sub-interval of it.  vmax() only
+  // guards the caller's ordering; it is not a truncation.
+  Type lo = qam;
+  Type hi = vmax(qa, qam);
 
   // Cut points clamped into [lo, hi] and then forced non-decreasing.
   Type cuts[6];
