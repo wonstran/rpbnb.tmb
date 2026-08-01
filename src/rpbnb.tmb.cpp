@@ -48,6 +48,17 @@ static const double gauss_w16[8] = {
 // retuned; see gaussian_cell_prob() for why no finite value of it is safe.
 #define GAUSS_EDGE 4.0
 
+// Cut points on the STANDARD NORMAL's own scale, merged into the panel layout
+// alongside the edge brackets.  The brackets resolve the transition; nothing
+// resolved phi(z) itself, so at |rho| >= 0.99 -- where the brackets collapse to
+// near-zero width and leave two very wide outer panels -- a 16-point rule was
+// stepping across phi's peak.  Over the truck cell grid that cost 16.4 nats at
+// rho = 0.9977, 17.2 at 0.999 and 40.7 at -0.999; with these it is 0.11, 0.54
+// and 0.94.  Three points is the whole benefit: subdividing the outer panels
+// further (10 or 12 panels against these 8) moves none of those numbers.
+#define GAUSS_PHI_N 3
+static const double gauss_phi_cuts[GAUSS_PHI_N] = {-2.0, 0.0, 2.0};
+
 // CppAD in the supported TMB toolchain does not overload std::expm1/log1p.
 // These series-backed equivalents retain precision and AD derivatives near 0.
 template<class Type>
@@ -470,16 +481,17 @@ Type clayton_cell_prob(Type log_a, Type log_am, Type log_pmf_a,
 // worst-case relative error over the truck cell grid is 8e-10 out to
 // |rho| = 0.9, against 1.0 (total loss) for the clipped form.
 //
-// It is not free at the top of the range: at |rho| >= 0.99 those wide outer
-// panels are resolved on the transition scale but not on phi's own, and the
-// truck grid loses 1.6 nats at rho = 0.99, 17.2 at 0.999 and 40.7 at -0.999,
-// on cells whose probability is around 1e-30.  Adding cut points at fixed z
-// -- -2, 0, 2 is enough -- takes those to 0.0, 0.5 and 0.9, at the cost of
-// three more panels on every cell at every rho, since a collapsed panel still
-// occupies the tape.  Not taken: 40 nats against 119,733 is not the trade the
-// hot loop of the Laplace inner Newton should be paying for, and it buys
-// nothing at all at rho = 0.9999, where the residual (5.1 nats) comes from the
-// margins rather than the panels.
+// It was not free at the top of the range, which is what GAUSS_PHI_CUTS is
+// for: with only the edge brackets, |rho| >= 0.99 leaves two very wide outer
+// panels resolved on the transition scale but not on phi's own, and the truck
+// grid lost 1.6 nats at rho = 0.99, 16.4 at 0.9977, 17.2 at 0.999 and 40.7 at
+// -0.999.  That is not a corner of the domain: a truck subset fits at
+// rho = 0.9977.  See the constant for the measured effect.
+//
+// One residual is left, deliberately.  At rho = 0.9999 with mu = 1 the grid
+// still loses about 5 nats, and no panel layout moves it -- 8, 10 and 12
+// panels all give the same number, so it is the margins reaching the
+// safe_qnorm() clamp, not the quadrature.  See the closing paragraph.
 //
 // Dividing by rho needs |rho| bounded away from zero.  The floor only affects
 // where the cut points land, and at |rho| = 1e-6 they land 1e6 quantiles away
@@ -521,21 +533,41 @@ Type gaussian_cell_prob(Type qa, Type qam, Type qb, Type qbm, Type rho) {
   Type lo = qam;
   Type hi = vmax(qa, qam);
 
+  // Interior cut points: the four edge brackets, plus GAUSS_PHI_CUTS on phi's
+  // own scale.  These have to be SORTED before the monotone pass below, not
+  // merely interleaved in some fixed order: that pass raises each cut to the
+  // running maximum, so an out-of-order fixed cut would drag an edge bracket
+  // with it and destroy the placement the brackets exist to provide.  A
+  // bubble-sort network run unconditionally sorts branch-free on the tape --
+  // 21 comparators against the 384 transcendental calls the panels cost, so
+  // the sort does not show up in the profile.
+  const int NCUT = 4 + GAUSS_PHI_N;
+  Type v[NCUT];
+  v[0] = clo - Type(GAUSS_EDGE) * edge;
+  v[1] = clo + Type(GAUSS_EDGE) * edge;
+  v[2] = chi - Type(GAUSS_EDGE) * edge;
+  v[3] = chi + Type(GAUSS_EDGE) * edge;
+  for (int j = 0; j < GAUSS_PHI_N; j++) v[4 + j] = Type(gauss_phi_cuts[j]);
+  for (int i = 1; i < NCUT; i++) {
+    for (int j = i; j > 0; j--) {
+      Type a = v[j - 1], b = v[j];
+      v[j - 1] = vmin(a, b);
+      v[j] = vmax(a, b);
+    }
+  }
+
   // Cut points clamped into [lo, hi] and then forced non-decreasing.
-  Type cuts[6];
+  Type cuts[NCUT + 2];
   cuts[0] = lo;
-  cuts[1] = clo - Type(GAUSS_EDGE) * edge;
-  cuts[2] = clo + Type(GAUSS_EDGE) * edge;
-  cuts[3] = chi - Type(GAUSS_EDGE) * edge;
-  cuts[4] = chi + Type(GAUSS_EDGE) * edge;
-  cuts[5] = hi;
-  for (int j = 1; j < 6; j++) {
+  for (int j = 0; j < NCUT; j++) cuts[j + 1] = v[j];
+  cuts[NCUT + 1] = hi;
+  for (int j = 1; j < NCUT + 2; j++) {
     cuts[j] = vmin(vmax(cuts[j], lo), hi);
     cuts[j] = vmax(cuts[j], cuts[j - 1]);
   }
 
   Type total = Type(0);
-  for (int p = 0; p < 5; p++) {
+  for (int p = 0; p < NCUT + 1; p++) {
     Type half = (cuts[p + 1] - cuts[p]) / Type(2);
     Type mid = (cuts[p + 1] + cuts[p]) / Type(2);
     Type acc = Type(0);

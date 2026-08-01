@@ -408,6 +408,80 @@ test_that("Gaussian keeps the off-diagonal cells at strong correlation", {
   }
 })
 
+test_that("Gaussian resolves phi's own scale at near-comonotone rho", {
+  skip_on_cran()
+  # Regression for GAUSS_PHI_CUTS. The edge brackets resolve the transition the
+  # integrand makes; nothing resolved the standard normal density itself. Once
+  # |rho| >= 0.99 the brackets collapse to near-zero width, leaving two very
+  # wide outer panels, and a 16-point rule stepped across phi's peak inside
+  # them. Over these cells that cost 16.4 nats at rho = 0.9977.
+  #
+  # rho = 0.9977 is not a stress value picked to make a point: it is where a
+  # 300-observation truck subset actually fits under method = "laplace".
+  #
+  # The cells are DISTINCT truck (y1, y2) pairs, which is what makes this a
+  # tail test rather than a synthetic one.
+  #
+  # They are then filtered to those the REFERENCE can represent. At these
+  # margins the deepest truck cells have probabilities below 1e-300, where
+  # stats::integrate() returns exactly 0 and -sum(log(p)) is -Inf; the template
+  # floors such cells and so does the caller, so including them would compare
+  # two floors and measure nothing. The filter is on the reference, not on the
+  # template, so it cannot hide a template failure -- and the guards below
+  # assert that what survives is still a long tail and still large enough to
+  # separate the two panel layouts.
+  path <- system.file("extdata", "export_dense_all.csv",
+                      package = "rpbnb.tmb", mustWork = TRUE)
+  d <- utils::read.csv(path)
+  cells <- unique(data.frame(y1 = d$ALL_3, y2 = d$C_DISTR))
+
+  mu1 <- 10.5; mu2 <- 1.32; m <- 1
+  safe_qnorm <- function(p) stats::qnorm(pmin(pmax(p, 1e-15), 1 - 1e-15))
+  qn <- function(y, mu) safe_qnorm(stats::pnbinom(y, size = 1 / m, mu = mu))
+
+  # Same tail flip as the template; see the window test above for why a
+  # reference written the naive way cancels to zero here.
+  bracket <- function(z, qb, qbm, rho, s) {
+    A <- (qb - rho * z) / s
+    B <- (qbm - rho * z) / s
+    flip <- A + B > 0
+    stats::pnorm(ifelse(flip, -B, A)) - stats::pnorm(ifelse(flip, -A, B))
+  }
+  cell <- function(qa, qam, qb, qbm, rho) {
+    s <- sqrt(1 - rho^2)
+    stats::integrate(function(z) stats::dnorm(z) * bracket(z, qb, qbm, rho, s),
+                     lower = qam, upper = qa,
+                     rel.tol = 1e-12, subdivisions = 2000L)$value
+  }
+
+  rhos <- c(0.9977, -0.999)
+  qs <- list(qa = qn(cells$y1, mu1), qam = qn(cells$y1 - 1, mu1),
+             qb = qn(cells$y2, mu2), qbm = qn(cells$y2 - 1, mu2))
+  p_all <- vapply(rhos, function(rho)
+    mapply(cell, qs$qa, qs$qam, qs$qb, qs$qbm, MoreArgs = list(rho = rho)),
+    numeric(nrow(cells)))
+  keep <- apply(p_all, 1L, function(r) all(is.finite(r) & r > 1e-200))
+
+  expect_gt(sum(keep), 50)               # enough cells to sum a real error over
+  expect_gt(max(cells$y1[keep]), 30)     # and the tail survives the filter
+  expect_true(all(qs$qa[keep] > qs$qam[keep]))  # nothing lost to the qnorm clamp
+
+  dat <- cells[keep, , drop = FALSE]
+  fit <- fit_rpbnb_tmb(y1 ~ 1, y2 ~ 1, data = dat,
+                       dependence = copula("normal"), draws = 2, keep = "full",
+                       control = rpbnb_tmb_control(iterlim = 1, n_cores = 1))
+
+  for (k in seq_along(rhos)) {
+    par <- c(log(mu1), log(mu2), log(m), log(m), atanh(rhos[k]))
+    # Without the phi-scale cuts this subset loses 15.3 nats at rho = 0.9977
+    # and 16.6 at -0.999; with them, 0.94 and 1.02. The threshold separates the
+    # two without asserting that a 16-point rule is exact on cells whose
+    # probability runs down to 1e-193.
+    expect_lt(abs(as.numeric(fit$obj$fn(par)) + sum(log(p_all[keep, k]))), 3,
+              label = sprintf("rho = %.4f", rhos[k]))
+  }
+})
+
 test_that("Frank copula fit converges", {
   skip_on_cran()
   set.seed(1)
