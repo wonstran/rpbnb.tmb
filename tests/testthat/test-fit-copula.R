@@ -414,7 +414,7 @@ test_that("Gaussian resolves phi's own scale at near-comonotone rho", {
   # integrand makes; nothing resolved the standard normal density itself. Once
   # |rho| >= 0.99 the brackets collapse to near-zero width, leaving two very
   # wide outer panels, and a 16-point rule stepped across phi's peak inside
-  # them. Over these cells that cost 16.4 nats at rho = 0.9977.
+  # them. Over these cells that cost 15.3 nats at rho = 0.9977.
   #
   # rho = 0.9977 is not a stress value picked to make a point: it is where a
   # 300-observation truck subset actually fits under method = "laplace".

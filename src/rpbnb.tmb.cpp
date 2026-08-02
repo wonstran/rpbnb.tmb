@@ -52,12 +52,19 @@ static const double gauss_w16[8] = {
 // alongside the edge brackets.  The brackets resolve the transition; nothing
 // resolved phi(z) itself, so at |rho| >= 0.99 -- where the brackets collapse to
 // near-zero width and leave two very wide outer panels -- a 16-point rule was
-// stepping across phi's peak.  Over the truck cell grid that cost 16.4 nats at
-// rho = 0.9977, 17.2 at 0.999 and 40.7 at -0.999; with these it is 0.11, 0.54
-// and 0.94.  Three points is the whole benefit: subdividing the outer panels
-// further (10 or 12 panels against these 8) moves none of those numbers.
-#define GAUSS_PHI_N 3
-static const double gauss_phi_cuts[GAUSS_PHI_N] = {-2.0, 0.0, 2.0};
+// stepping across phi's peak.  Over the truck cell grid that cost 15.3 nats at
+// rho = 0.9977, 15.4 at 0.999 and 36.6 at -0.999; with these it is 0.94, 1.28
+// and 3.11.
+//
+// Two points, not three.  A cut at z = 0 as well changes NONE of those numbers
+// to two decimals -- 16 nodes already resolve phi across [-2, 2] -- and each
+// cut is a panel, which the timings show costs a flat 20% of the Gaussian
+// Laplace path.  Subdividing the outer panels instead moves nothing either.
+// The one variant that does help is {-3, -1, 1, 3}, worth a few nats more at
+// mu = (10.5, 1.32) for a fourth panel; not taken, because at that size the
+// two independent references disagree by about a nat themselves.
+#define GAUSS_PHI_N 2
+static const double gauss_phi_cuts[GAUSS_PHI_N] = {-2.0, 2.0};
 
 // CppAD in the supported TMB toolchain does not overload std::expm1/log1p.
 // These series-backed equivalents retain precision and AD derivatives near 0.
@@ -481,15 +488,15 @@ Type clayton_cell_prob(Type log_a, Type log_am, Type log_pmf_a,
 // worst-case relative error over the truck cell grid is 8e-10 out to
 // |rho| = 0.9, against 1.0 (total loss) for the clipped form.
 //
-// It was not free at the top of the range, which is what GAUSS_PHI_CUTS is
+// It was not free at the top of the range, which is what gauss_phi_cuts is
 // for: with only the edge brackets, |rho| >= 0.99 leaves two very wide outer
 // panels resolved on the transition scale but not on phi's own, and the truck
-// grid lost 1.6 nats at rho = 0.99, 16.4 at 0.9977, 17.2 at 0.999 and 40.7 at
+// grid lost 1.6 nats at rho = 0.99, 15.3 at 0.9977, 15.4 at 0.999 and 36.6 at
 // -0.999.  That is not a corner of the domain: a truck subset fits at
 // rho = 0.9977.  See the constant for the measured effect.
 //
 // One residual is left, deliberately.  At rho = 0.9999 with mu = 1 the grid
-// still loses about 5 nats, and no panel layout moves it -- 8, 10 and 12
+// still loses about 5 nats, and no panel layout moves it -- 7, 10 and 12
 // panels all give the same number, so it is the margins reaching the
 // safe_qnorm() clamp, not the quadrature.  See the closing paragraph.
 //
