@@ -60,7 +60,13 @@ marginal effects, \code{"compact"} keeps estimates only, and
 diagnostics that access \code{fit$obj} require \code{"full"}.}
 
 \item{poisson_1, poisson_2}{Fit the corresponding margin at its exact Poisson
-limit (NB2 dispersion m = 0, held fixed).}
+limit (NB2 dispersion m = 0, held fixed). Available for every dependence
+structure, copulas included. This is the remedy for a dispersion that
+collapses toward zero on its own: at m ~ 1e-7 the NB2 size 1/m is ~1e7 and
+the marginal CDF is computed as a difference of logarithms agreeing to
+eleven digits, which leaves the value intact but the curvature -- and so
+the standard errors -- numerically worthless. Pinning the limit removes
+the parameter instead of estimating it into that regime.}
 
 \item{method}{Estimator for the random-coefficient integral. \code{"sml"}
 (default) uses simulated maximum likelihood over Halton draws.
@@ -82,6 +88,15 @@ meaningful to compare against an AIC from an SML fit of the same model.}
 \value{
 An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 is a compact package-owned summary and does not retain a second TMB tape.
+
+\code{optimizer} is the \code{nlminb()} return value, with three fields
+added: \code{restarts} counts how many times the solve was restarted from
+its own answer to clear \code{control$gradtol}, \code{max_abs_gradient} is
+the score norm actually achieved, and \code{gradient_tolerance} is the
+threshold it was judged against. \code{convergence} and \code{message}
+come from nlminb's relative \emph{function} test and can report success at
+a point that is not stationary, so \code{max_abs_gradient} is the field to
+check before trusting a standard error.
 
 \code{method} records which estimator produced the fit, echoing the
 \code{method} argument (\code{"sml"} or \code{"laplace"}). Both

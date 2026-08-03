@@ -82,3 +82,44 @@ test_that("shipped truck examples remain valid R syntax", {
     expect_true(is.expression(parse(file = script)), label = nm)
   }
 })
+
+test_that("dependence and method add a Model information section", {
+  results_dir <- file.path(tempdir(), "truck-results-info")
+  unlink(results_dir, recursive = TRUE)
+
+  output_path <- rpbnb.tmb:::.write_truck_results_markdown(
+    model_summary = "Summary: fitted model",
+    marginal_effects = "x  1.25",
+    elasticities = "x  0.50",
+    dependence = copula("normal"),
+    method = "laplace",
+    results_dir = results_dir,
+    timestamp = as.POSIXct("2026-07-27 14:35:09", tz = "UTC")
+  )
+
+  report <- readLines(output_path, warn = FALSE)
+  expect_identical(report[1:8], c(
+    "# RP-BNB truck model results",
+    "",
+    "Generated: 2026-07-27 14:35:09 UTC",
+    "",
+    "## Model information",
+    "",
+    "- Dependence: Gaussian copula (normal)",
+    "- Method: laplace"
+  ))
+  # The section is additive: everything the three-argument form wrote is still
+  # there, in the same order.
+  expect_true(all(c("## Model fit summary",
+                    "## Average marginal effects (AME)",
+                    "## Elasticities / semi-elasticities (AME)") %in% report))
+})
+
+test_that("dependence labels stay readable for every structure", {
+  label <- rpbnb.tmb:::.dependence_label
+  expect_identical(label(copula("normal")), "Gaussian copula (normal)")
+  expect_identical(label(copula("frank")), "Frank copula (frank)")
+  expect_identical(label(copula("kimeldorf")), "Clayton copula (kimeldorf)")
+  expect_identical(label("famoye"), "Famoye/Sarmanov")
+  expect_identical(label("independence"), "independence")
+})

@@ -7,6 +7,8 @@
 rpbnb_tmb_control(
   iterlim = 500L,
   reltol = 1e-08,
+  gradtol = 1e-05,
+  restarts = 10L,
   print_level = 0L,
   n_cores = 1L,
   max_threads = n_cores,
@@ -19,6 +21,26 @@ rpbnb_tmb_control(
 \item{iterlim}{Maximum optimizer iterations.}
 
 \item{reltol}{Relative convergence tolerance.}
+
+\item{gradtol}{Stationarity tolerance for the score, applied \emph{relative}
+to the objective: the fit is treated as stationary once
+\code{max(abs(gradient))} falls below \code{gradtol * max(1, abs(nll))}.
+\code{nlminb()} declares convergence from its relative function test,
+which can fire while the score is still far from zero; a Hessian taken
+there is not a curvature and its inverse can carry negative variances. The
+fit is restarted until the gradient clears this tolerance; missing it is
+not warned about on its own, because the copula families legitimately
+optimise against a clamp or a probability floor where no step improves the
+objective, but it is reported in the warning raised when the Hessian
+actually fails to factor, and is kept on the fit as
+\code{optimizer$max_abs_gradient}. The scaling matters because the score
+is a sum over observations, so an absolute cutoff would tighten with
+sample size for no statistical reason.}
+
+\item{restarts}{Maximum number of times to restart \code{nlminb()} from its
+own answer while \code{gradtol} is unmet. Restarting resets the trust
+region and step scaling that stalled the first solve. Set to \code{0L} for
+the single-call behaviour of earlier versions.}
 
 \item{print_level}{Verbosity for nlminb.}
 

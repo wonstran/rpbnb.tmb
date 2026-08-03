@@ -1,3 +1,63 @@
+#' Centre/scale lookup for a design that was standardized before fitting
+#'
+#' Returns centre and scale vectors aligned to \code{cn}, defaulting to 0 and 1
+#' for any column not named in \code{scaling} (binary indicators, the
+#' intercept, anything left in raw units).
+#' @keywords internal
+#' @noRd
+.scaling_vec <- function(scaling, cn) {
+  ctr <- setNames(numeric(length(cn)), cn)
+  scl <- setNames(rep(1, length(cn)), cn)
+  if (is.null(scaling)) return(list(center = ctr, scale = scl))
+  if (!is.list(scaling)) {
+    stop("`scaling` must be a named list of c(center =, scale =) pairs.",
+         call. = FALSE)
+  }
+  for (v in names(scaling)) {
+    if (!v %in% cn) next
+    p <- scaling[[v]]
+    if (is.null(names(p)) || !all(c("center", "scale") %in% names(p))) {
+      stop("scaling[['", v, "']] needs named `center` and `scale` entries.",
+           call. = FALSE)
+    }
+    if (!is.finite(p[["scale"]]) || p[["scale"]] <= 0) {
+      stop("scaling[['", v, "']]$scale must be a positive finite number.",
+           call. = FALSE)
+    }
+    ctr[v] <- p[["center"]]
+    scl[v] <- p[["scale"]]
+  }
+  list(center = ctr, scale = scl)
+}
+
+#' Flag which selected columns are already on a log scale
+#'
+#' Validates \code{log_vars} against the design and returns a logical vector
+#' aligned to \code{sel}.
+#' @keywords internal
+#' @noRd
+.log_vars_flag <- function(log_vars, cn, sel, is_bin) {
+  flag <- rep(FALSE, length(sel))
+  if (is.null(log_vars)) return(flag)
+  if (!is.character(log_vars)) {
+    stop("`log_vars` must be a character vector of column names.", call. = FALSE)
+  }
+  unknown <- setdiff(log_vars, cn)
+  if (length(unknown)) {
+    stop("log_vars not found in the design: ",
+         paste(unknown, collapse = ", "), call. = FALSE)
+  }
+  flag <- cn[sel] %in% log_vars
+  # A 0/1 column is not a log of anything, and treating it as one would divide
+  # by exp(0) = 1 for the zeros and silently report nonsense.
+  if (any(flag & is_bin)) {
+    stop("log_vars names binary column(s): ",
+         paste(cn[sel][flag & is_bin], collapse = ", "),
+         ". A 0/1 indicator is not a log-transformed variable.", call. = FALSE)
+  }
+  flag
+}
+
 #' Marginal effects for a rpbnb_tmb model
 #'
 #' Computes average marginal effects (AME) or marginal effects at the mean (MEM)
@@ -15,6 +75,36 @@
 #' @param vars Optional character vector of variable names to restrict output.
 #' @param include_intercept Logical; include the intercept term in output.
 #' @param digits Number of decimal places for printed table entries.
+#' @param scaling Optional named list of \code{c(center =, scale =)} pairs, one
+#'   per covariate that was centred and/or scaled before fitting, used to report
+#'   the results in the covariate's original units.  Columns not named are left
+#'   alone, so binary indicators and untransformed variables need no entry.
+#'
+#'   Only the reported quantity is rescaled; the fitted design is not rebuilt.
+#'   That distinction is not cosmetic when a standardized covariate also carries
+#'   a random coefficient.  The random term enters as
+#'   \code{x_std * dev}, so substituting \code{x_raw = x_std * s + c} would add a
+#'   \code{(c/s) * dev} random intercept the model never estimated -- which is
+#'   how a centred random slope turns back into the disguised random intercept
+#'   that centring was meant to remove.  The chain rule avoids that entirely:
+#'   \eqn{\partial\mu/\partial x_{raw} = (\partial\mu/\partial x_{std})/s}, and
+#'   the elasticity's leading factor becomes
+#'   \eqn{x_{raw}/s = x_{std} + c/s}.  Binary effects are untouched.
+#' @param log_vars Optional character vector naming covariates that are ALREADY
+#'   a log, so that results are reported per unit of the underlying variable
+#'   \eqn{v_j = \exp(x_j)} rather than per unit of \eqn{x_j} itself.
+#'
+#'   Without this the elasticity formula treats \eqn{\log v} as an ordinary
+#'   regressor and returns \eqn{\bar{x} b}, the elasticity with respect to the
+#'   LOG -- for the truck model's \code{LNAADT_3} that is 8.59, where the
+#'   elasticity with respect to AADT is the coefficient itself, 0.871.  A
+#'   ten-fold overstatement that looks perfectly plausible in a table.
+#'
+#'   Because \eqn{\partial\log\mu/\partial\log v = (\partial\mu/\partial x)/\mu},
+#'   the elasticity is \eqn{E[d\mu/\mu]/s} and the marginal effect is
+#'   \eqn{E[d\mu/(s v)]}, with \eqn{v = \exp(x_{std} s + c)} picking up any
+#'   \code{scaling} applied to the logged column.  Named columns are reported
+#'   with type \code{"log-continuous"}.  Binary columns are rejected.
 #' @param ... Not used.
 #' @return A data frame (single margin) or named list of two data frames
 #'   (\code{"both"}).
@@ -24,7 +114,9 @@ rpbnb_tmb_marginal_effects <- function(fit,
                                        type  = c("AME", "MEM"),
                                        vars  = NULL,
                                        include_intercept = FALSE,
-                                       digits = 4L, ...) {
+                                       digits = 4L,
+                                       scaling = NULL,
+                                       log_vars = NULL, ...) {
   which <- match.arg(which)
   type  <- match.arg(type)
   if (!identical(fit$inference, "full") && !is.null(fit$rp_meta)) {
@@ -35,11 +127,13 @@ rpbnb_tmb_marginal_effects <- function(fit,
     )
   }
   res <- if (which == "both") {
-    list(y1 = .me_one_eq(fit, 1L, type, vars, include_intercept, digits),
-         y2 = .me_one_eq(fit, 2L, type, vars, include_intercept, digits))
+    list(y1 = .me_one_eq(fit, 1L, type, vars, include_intercept, digits,
+                         scaling, log_vars),
+         y2 = .me_one_eq(fit, 2L, type, vars, include_intercept, digits,
+                         scaling, log_vars))
   } else {
     .me_one_eq(fit, if (which == "y1") 1L else 2L,
-               type, vars, include_intercept, digits)
+               type, vars, include_intercept, digits, scaling, log_vars)
   }
   invisible(res)
 }
@@ -59,7 +153,9 @@ rpbnb_tmb_elasticities <- function(fit,
                                    type  = c("AME", "MEM"),
                                    vars  = NULL,
                                    include_intercept = FALSE,
-                                   digits = 4L, ...) {
+                                   digits = 4L,
+                                   scaling = NULL,
+                                   log_vars = NULL, ...) {
   which <- match.arg(which)
   type  <- match.arg(type)
   if (!identical(fit$inference, "full") && !is.null(fit$rp_meta)) {
@@ -70,11 +166,13 @@ rpbnb_tmb_elasticities <- function(fit,
     )
   }
   res <- if (which == "both") {
-    list(y1 = .el_one_eq(fit, 1L, type, vars, include_intercept, digits),
-         y2 = .el_one_eq(fit, 2L, type, vars, include_intercept, digits))
+    list(y1 = .el_one_eq(fit, 1L, type, vars, include_intercept, digits,
+                         scaling, log_vars),
+         y2 = .el_one_eq(fit, 2L, type, vars, include_intercept, digits,
+                         scaling, log_vars))
   } else {
     .el_one_eq(fit, if (which == "y1") 1L else 2L,
-               type, vars, include_intercept, digits)
+               type, vars, include_intercept, digits, scaling, log_vars)
   }
   invisible(res)
 }
@@ -112,22 +210,27 @@ rpbnb_tmb_elasticities <- function(fit,
 #' Compute marginal effects for one equation
 #' @keywords internal
 #' @noRd
-.me_one_eq <- function(fit, eq, type, vars, include_intercept, digits) {
-  .diag_one_eq(fit, eq, type, vars, include_intercept, digits, quantity = "me")
+.me_one_eq <- function(fit, eq, type, vars, include_intercept, digits,
+                       scaling = NULL, log_vars = NULL) {
+  .diag_one_eq(fit, eq, type, vars, include_intercept, digits,
+               quantity = "me", scaling = scaling, log_vars = log_vars)
 }
 
 #' Compute elasticities for one equation
 #' @keywords internal
 #' @noRd
-.el_one_eq <- function(fit, eq, type, vars, include_intercept, digits) {
-  .diag_one_eq(fit, eq, type, vars, include_intercept, digits, quantity = "elas")
+.el_one_eq <- function(fit, eq, type, vars, include_intercept, digits,
+                       scaling = NULL, log_vars = NULL) {
+  .diag_one_eq(fit, eq, type, vars, include_intercept, digits,
+               quantity = "elas", scaling = scaling, log_vars = log_vars)
 }
 
 #' Core diagnostic engine for one equation
 #' @keywords internal
 #' @noRd
 .diag_one_eq <- function(fit, eq, type, vars, include_intercept, digits,
-                         quantity = c("me", "elas")) {
+                         quantity = c("me", "elas"), scaling = NULL,
+                         log_vars = NULL) {
   quantity <- match.arg(quantity)
 
   # ---- Extract design & metadata ----
@@ -163,6 +266,14 @@ rpbnb_tmb_elasticities <- function(fit,
   # ---- Design for AME / MEM ----
   X_use <- if (type == "MEM") matrix(colMeans(X), 1,
                                      dimnames = list(NULL, cn)) else X
+
+  # Centre/scale of the pre-fit standardization, or 0/1 throughout when the
+  # design was never transformed.  X_use itself is deliberately left on the
+  # scale the model was fitted on; see the `scaling` documentation.
+  sv  <- .scaling_vec(scaling, cn)
+  ctr <- sv$center
+  scl <- sv$scale
+  is_log <- .log_vars_flag(log_vars, cn, sel, is_bin)
 
   # ---- Random coefficient draws ----
   if (nr > 0) {
@@ -210,7 +321,20 @@ rpbnb_tmb_elasticities <- function(fit,
         # Fixed continuous: b_j * mu
         dmu <- b[j] * mu_bar
       }
-      if (quantity == "me") mean(dmu) else mean(X_use[, j] * dmu / mu_bar)
+      if (is_log[m]) {
+        # x_j is already log(v_j): report per unit of v_j, not of log v_j.
+        # d/dlog v = (1/s) d/dx_std, so the elasticity is E[dmu/mu]/s and the
+        # marginal effect divides by v = exp(x_std * s + c) as well.
+        if (quantity == "me") {
+          mean(dmu / (scl[j] * exp(X_use[, j] * scl[j] + ctr[j])))
+        } else {
+          mean(dmu / mu_bar) / scl[j]
+        }
+      } else if (quantity == "me") {
+        mean(dmu) / scl[j]
+      } else {
+        mean((X_use[, j] + ctr[j] / scl[j]) * dmu / mu_bar)
+      }
     }
   }, numeric(1))
 
@@ -227,7 +351,8 @@ rpbnb_tmb_elasticities <- function(fit,
     G <- numDeriv::jacobian(.estimand_t, theta_hat,
                             fit = fit, eq = eq, sel = sel, cn = cn,
                             is_bin = is_bin, quantity = quantity,
-                            X_use = X_use, rand_idx = rand_idx)
+                            X_use = X_use, rand_idx = rand_idx,
+                            ctr = ctr, scl = scl, is_log = is_log)
     for (m in seq_along(res)) {
       g <- G[m, ]
       se[m] <- sqrt(as.numeric(t(g) %*% V %*% g))
@@ -244,7 +369,7 @@ rpbnb_tmb_elasticities <- function(fit,
     Type = ifelse(
       is_bin,
       if (quantity == "me") "binary" else "semi-elas",
-      "continuous"
+      ifelse(is_log, "log-continuous", "continuous")
     ),
     row.names = NULL, check.names = FALSE
   )
@@ -268,7 +393,10 @@ rpbnb_tmb_elasticities <- function(fit,
 #' @keywords internal
 #' @noRd
 .estimand_t <- function(theta, fit, eq, sel, cn, is_bin, quantity,
-                        X_use, rand_idx) {
+                        X_use, rand_idx,
+                        ctr = setNames(numeric(length(cn)), cn),
+                        scl = setNames(rep(1, length(cn)), cn),
+                        is_log = rep(FALSE, length(sel))) {
   n_par <- length(cn)
   b_t <- theta[seq_len(n_par)]; names(b_t) <- cn
 
@@ -312,7 +440,17 @@ rpbnb_tmb_elasticities <- function(fit,
       } else {
         dmu <- b_t[j] * mu_bar_t
       }
-      if (quantity == "me") mean(dmu) else mean(X_use[, j] * dmu / mu_bar_t)
+      if (is_log[m]) {
+        if (quantity == "me") {
+          mean(dmu / (scl[j] * exp(X_use[, j] * scl[j] + ctr[j])))
+        } else {
+          mean(dmu / mu_bar_t) / scl[j]
+        }
+      } else if (quantity == "me") {
+        mean(dmu) / scl[j]
+      } else {
+        mean((X_use[, j] + ctr[j] / scl[j]) * dmu / mu_bar_t)
+      }
     }
   }, numeric(1))
 }

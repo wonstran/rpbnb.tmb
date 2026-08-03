@@ -11,6 +11,8 @@ rpbnb_tmb_elasticities(
   vars = NULL,
   include_intercept = FALSE,
   digits = 4L,
+  scaling = NULL,
+  log_vars = NULL,
   ...
 )
 }
@@ -27,6 +29,38 @@ sample mean of covariates).}
 \item{include_intercept}{Logical; include the intercept term in output.}
 
 \item{digits}{Number of decimal places for printed table entries.}
+
+\item{scaling}{Optional named list of \code{c(center =, scale =)} pairs, one
+per covariate that was centred and/or scaled before fitting, used to report
+the results in the covariate's original units.  Columns not named are left
+alone, so binary indicators and untransformed variables need no entry.
+
+Only the reported quantity is rescaled; the fitted design is not rebuilt.
+That distinction is not cosmetic when a standardized covariate also carries
+a random coefficient.  The random term enters as
+\code{x_std * dev}, so substituting \code{x_raw = x_std * s + c} would add a
+\code{(c/s) * dev} random intercept the model never estimated -- which is
+how a centred random slope turns back into the disguised random intercept
+that centring was meant to remove.  The chain rule avoids that entirely:
+\eqn{\partial\mu/\partial x_{raw} = (\partial\mu/\partial x_{std})/s}, and
+the elasticity's leading factor becomes
+\eqn{x_{raw}/s = x_{std} + c/s}.  Binary effects are untouched.}
+
+\item{log_vars}{Optional character vector naming covariates that are ALREADY
+a log, so that results are reported per unit of the underlying variable
+\eqn{v_j = \exp(x_j)} rather than per unit of \eqn{x_j} itself.
+
+Without this the elasticity formula treats \eqn{\log v} as an ordinary
+regressor and returns \eqn{\bar{x} b}, the elasticity with respect to the
+LOG -- for the truck model's \code{LNAADT_3} that is 8.59, where the
+elasticity with respect to AADT is the coefficient itself, 0.871.  A
+ten-fold overstatement that looks perfectly plausible in a table.
+
+Because \eqn{\partial\log\mu/\partial\log v = (\partial\mu/\partial x)/\mu},
+the elasticity is \eqn{E[d\mu/\mu]/s} and the marginal effect is
+\eqn{E[d\mu/(s v)]}, with \eqn{v = \exp(x_{std} s + c)} picking up any
+\code{scaling} applied to the logged column.  Named columns are reported
+with type \code{"log-continuous"}.  Binary columns are rejected.}
 
 \item{...}{Not used.}
 }

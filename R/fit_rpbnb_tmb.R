@@ -31,7 +31,13 @@
 #'   \code{"full"} also retains the TMB objective and responses. Low-level
 #'   diagnostics that access \code{fit$obj} require \code{"full"}.
 #' @param poisson_1,poisson_2 Fit the corresponding margin at its exact Poisson
-#'   limit (NB2 dispersion m = 0, held fixed).
+#'   limit (NB2 dispersion m = 0, held fixed). Available for every dependence
+#'   structure, copulas included. This is the remedy for a dispersion that
+#'   collapses toward zero on its own: at m ~ 1e-7 the NB2 size 1/m is ~1e7 and
+#'   the marginal CDF is computed as a difference of logarithms agreeing to
+#'   eleven digits, which leaves the value intact but the curvature -- and so
+#'   the standard errors -- numerically worthless. Pinning the limit removes
+#'   the parameter instead of estimating it into that regime.
 #' @param method Estimator for the random-coefficient integral. \code{"sml"}
 #'   (default) uses simulated maximum likelihood over Halton draws.
 #'   \code{"laplace"} uses TMB's Laplace approximation with a sparse Hessian
@@ -50,6 +56,15 @@
 #'   meaningful to compare against an AIC from an SML fit of the same model.
 #' @return An object of class \code{rpbnb_tmb_fit}. The \code{sdreport} field
 #'   is a compact package-owned summary and does not retain a second TMB tape.
+#'
+#'   \code{optimizer} is the \code{nlminb()} return value, with three fields
+#'   added: \code{restarts} counts how many times the solve was restarted from
+#'   its own answer to clear \code{control$gradtol}, \code{max_abs_gradient} is
+#'   the score norm actually achieved, and \code{gradient_tolerance} is the
+#'   threshold it was judged against. \code{convergence} and \code{message}
+#'   come from nlminb's relative \emph{function} test and can report success at
+#'   a point that is not stationary, so \code{max_abs_gradient} is the field to
+#'   check before trusting a standard error.
 #'
 #'   \code{method} records which estimator produced the fit, echoing the
 #'   \code{method} argument (\code{"sml"} or \code{"laplace"}). Both
@@ -143,10 +158,19 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
          "to fit, or use `start` to set its working-scale starting value.",
          call. = FALSE)
   }
-  # Codes 1-3 are exactly the copula families.
-  if (family_code >= 1L && (isTRUE(poisson_1) || isTRUE(poisson_2))) {
-    stop("Poisson-limit margins not supported with copula dependence.")
-  }
+  # Poisson-limit margins used to be rejected for the copula families (codes
+  # 1-3).  The template never required that: every copula branch reads its
+  # marginal CDF pair through the same `pois1`/`pois2` switch that Famoye and
+  # independence do, so ppois/dpois were already wired in and simply
+  # unreachable from R.  The restriction also made the package's own boundary
+  # advice impossible to follow -- .warn_boundary_report() tells the caller to
+  # "use poisson_1/poisson_2 to fit that exact limit instead" when a dispersion
+  # collapses, and under a copula that was the one remedy the argument checks
+  # refused.  That is not hypothetical: the truck Gaussian fit drives both
+  # dispersions to m ~ 5e-7, where 1/m ~ 2e6 turns log(r) - log(r + mu) into a
+  # difference of two numbers agreeing to eleven digits, then multiplies it by
+  # r.  The value survives; the curvature does not, which is what leaves
+  # log_m1/log_m2 with "variances" of -904 and 9142 and an indefinite Hessian.
 
   # Prepare data
   prep <- .prepare_bnb_data(formula_1, formula_2, data)
@@ -349,17 +373,88 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
   obj <- configured$obj
 
   # Optimize with nlminb
+  nlminb_control <- list(
+    iter.max = control$iterlim,
+    eval.max = control$iterlim * 2,
+    rel.tol = control$reltol,
+    trace = max(0, control$print_level - 1)
+  )
   opt <- stats::nlminb(
     start = obj$par,
     objective = obj$fn,
     gradient = obj$gr,
-    control = list(
-      iter.max = control$iterlim,
-      eval.max = control$iterlim * 2,
-      rel.tol = control$reltol,
-      trace = max(0, control$print_level - 1)
-    )
+    control = nlminb_control
   )
+
+  # nlminb reports "relative convergence (4)" from its RELATIVE FUNCTION test,
+  # which says the objective stopped moving -- not that the gradient reached
+  # zero.  On a design whose columns span four orders of magnitude (the truck
+  # data carries IRI_ME ~ 100 alongside 0/1 indicators, giving a Hessian with a
+  # condition number of 2e7) PORT's trust region collapses long before the
+  # score does: that fit returned code 0 and a reassuring message at
+  # max|grad| = 2.6.  A Hessian taken at a non-stationary point is not a
+  # curvature, and this one was indefinite -- two non-positive eigenvalues,
+  # negative variances on five equation-2 coefficients, and the NA standard
+  # errors that followed from them.
+  #
+  # Restarting is what fixes it rather than a tighter rel.tol, because the
+  # stall is in the trust region and the step scaling, not in the tolerance:
+  # a fresh nlminb() call resets both while beginning at the answer already
+  # found, so a restart costs a fraction of the first solve.  Stop as soon as
+  # the gradient is small, or as soon as a restart stops buying objective --
+  # and record what was actually achieved either way, so a fit that could not
+  # be driven to stationarity says so instead of reporting code 0 and leaving
+  # the reader to infer it from NA standard errors.
+  max_abs_gradient <- function(par) {
+    g <- try(obj$gr(par), silent = TRUE)
+    if (inherits(g, "try-error") || !all(is.finite(g))) return(NA_real_)
+    max(abs(g))
+  }
+  # The tolerance is relative to the objective, because the score is not a
+  # scale-free quantity: it is a sum over observations, so both the score and
+  # the floating-point noise in it grow with n, and a fixed absolute cutoff
+  # therefore means "converged" on a 400-row simulation and "diverged" on a
+  # 3,487-row one at identical statistical quality.  Against |f| the same
+  # number separates the two cases this exists to tell apart -- the truck fit's
+  # 2.6 against an objective of 11,501, and a healthy 0.0025 against 1,200 --
+  # by three orders of magnitude.
+  gradient_tolerance <- function(objective) {
+    control$gradtol * max(1, abs(objective))
+  }
+  gradient_norm <- max_abs_gradient(opt$par)
+  restarts_used <- 0L
+  while (restarts_used < control$restarts &&
+         !is.na(gradient_norm) &&
+         gradient_norm > gradient_tolerance(opt$objective)) {
+    candidate <- try(
+      stats::nlminb(
+        start = opt$par,
+        objective = obj$fn,
+        gradient = obj$gr,
+        control = nlminb_control
+      ),
+      silent = TRUE
+    )
+    # A restart that errors, returns a non-finite objective, or lands above
+    # where it started is discarded outright.  Keeping it would let the polish
+    # loop move the estimate backwards, which is worse than the stall it is
+    # here to clear.
+    if (inherits(candidate, "try-error") ||
+        !is.finite(candidate$objective) ||
+        candidate$objective > opt$objective) {
+      break
+    }
+    restarts_used <- restarts_used + 1L
+    improvement <- opt$objective - candidate$objective
+    candidate$iterations <- candidate$iterations + opt$iterations
+    candidate$evaluations <- candidate$evaluations + opt$evaluations
+    opt <- candidate
+    gradient_norm <- max_abs_gradient(opt$par)
+    if (improvement <= 0) break
+  }
+  opt$restarts <- restarts_used
+  opt$max_abs_gradient <- gradient_norm
+  opt$gradient_tolerance <- gradient_tolerance(opt$objective)
 
   # Build named coefficient vector matching par_names
   coef_vec <- start
@@ -387,6 +482,43 @@ fit_rpbnb_tmb <- function(formula_1, formula_2, data,
     inference_result$boundary_report, family_code,
     sides = inference_result$boundary_sides
   )
+  # Reported here rather than straight after the optimizer, and only when the
+  # Hessian actually failed, because a large score is not by itself a defect:
+  # the copula likelihoods reach optima against a clamp or against the 1e-300
+  # cell-probability floor, where the objective has a kink and no step of any
+  # size improves it, and the package's own regression suite fits half a dozen
+  # such models on purpose.  Warning on the gradient alone would have fired on
+  # every one of them.  Paired with a Hessian that would not factor, though,
+  # the gradient is the explanation: an indefinite curvature at a point that is
+  # not stationary is arithmetic, not a property of the likelihood, and it is
+  # what puts NA into the standard errors.
+  if (isFALSE(inference_result$sdreport$pdHess)) {
+    detail <- if (is.na(gradient_norm) ||
+                  gradient_norm > opt$gradient_tolerance) {
+      paste0(
+        "The optimizer stopped at max|gradient| = ",
+        format(gradient_norm, digits = 4), " after ", restarts_used,
+        " restart(s), against a stationarity tolerance of ",
+        format(opt$gradient_tolerance, digits = 4),
+        ", so this is a curvature taken at a non-stationary point. Raise ",
+        "control$restarts or control$iterlim, rescale the design, or ",
+        "simplify the specification."
+      )
+    } else {
+      paste0(
+        "The gradient did reach stationarity (max|gradient| = ",
+        format(gradient_norm, digits = 4),
+        "), so the indefiniteness is in the curvature itself: a parameter is ",
+        "flat or at a boundary. A dispersion driven to zero is the usual ",
+        "cause -- see poisson_1/poisson_2."
+      )
+    }
+    warning(
+      "The Hessian is not positive definite, so some standard errors are NA ",
+      "and vcov() is not a covariance matrix. ", detail,
+      call. = FALSE
+    )
+  }
 
   rp_meta <- list(
     Z1 = Z1, Z2 = Z2,

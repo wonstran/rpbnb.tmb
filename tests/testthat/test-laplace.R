@@ -13,8 +13,18 @@ sml_baseline_fit <- function() {
     y2 = rnbinom(n, mu = mu, size = 1 / 0.5),
     x1 = x1
   )
+  # restarts = 0L is the point of this fit, not an incidental setting: the
+  # baseline pins the objective to 1e-10, and the convergence-polish loop
+  # added in rpbnb_tmb_control() restarts nlminb() from its own answer, which
+  # buys 5e-9 of log-likelihood here and would break the comparison.  Re-pinning
+  # the constant to the polished value would have silenced the failure while
+  # destroying what the test measures -- that the SML TAPE is unchanged, not
+  # that some particular optimizer schedule reproduces.  Turning the polish off
+  # restores exactly the single-nlminb() path the baseline was captured from,
+  # so the guard keeps its original meaning and still fails if the tape moves.
   fit_rpbnb_tmb(y1 ~ x1, y2 ~ x1, data = dat, random_1 = "x1",
-                dependence = "famoye", draws = 50, seed = 7)
+                dependence = "famoye", draws = 50, seed = 7,
+                control = rpbnb_tmb_control(restarts = 0L))
 }
 
 test_that("adding latent parameters leaves the SML tape unchanged", {
@@ -81,7 +91,21 @@ test_that("laplace keeps draws meaningful for post-estimation averaging", {
   set.seed(5)
   n <- 200
   x1 <- rnorm(n)
-  dat <- data.frame(y1 = rpois(n, 2), y2 = rpois(n, 2), x1 = x1)
+  # Negative-binomial rather than Poisson counts, so that the two dispersion
+  # parameters this model estimates are actually identified. Under rpois() they
+  # are not: m1 and m2 run to the floor, the Hessian stops being positive
+  # definite, and fit_rpbnb_tmb() now says so -- correctly, but through
+  # expect_no_warning() below, which would then be failing on a property of the
+  # fixture instead of on a defect. What this test is about is that `draws`
+  # survives on rp_meta for post-estimation averaging and that no latent leaked
+  # into the outer parameter vector; neither depends on the marginal
+  # distribution, and the parameter count asserted below is unchanged because
+  # both dispersions stay free either way.
+  dat <- data.frame(
+    y1 = rnbinom(n, mu = 2, size = 1 / 0.4),
+    y2 = rnbinom(n, mu = 2, size = 1 / 0.5),
+    x1 = x1
+  )
   # max_workload is set explicitly rather than left to the default. The default
   # auto-detects available memory, and .detect_available_memory_gib() is
   # documented to degrade to NA on platforms where detection is unavailable --
