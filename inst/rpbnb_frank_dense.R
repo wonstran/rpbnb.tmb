@@ -2,21 +2,14 @@ library(rpbnb.tmb)
 
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
 setwd("/home/wonstran/repos/truck")
-# detectCores() reports the hardware CPU count and ignores OMP_NUM_THREADS, so
-# on this box it returns 32 while OpenMP -- and therefore TMB -- will only ever
-# grant 8.  Asking for 32 just produced a "using 8 supported threads" warning on
-# every run; take the binding limit instead.
-n_cores <- local({
-  hardware <- parallel::detectCores()
-  omp <- suppressWarnings(as.integer(Sys.getenv("OMP_NUM_THREADS")))
-  if (is.na(omp) || omp < 1L) hardware else min(hardware, omp)
-})
+n_cores <- parallel::detectCores()
 draws <- 500L
-dependence <- copula("normal")
+dependence <- copula("frank")
 optimizer <- "laplace"
 
-# Path components stay separate so the same call resolves on POSIX and Windows.
-truck_data <- read.csv(file.path("data", "export_dense_all.csv"))
+# Path components stay separate: "inst\\extdata" is one directory named
+# inst\extdata on POSIX, so the backslash form only resolves on Windows.
+data <- read.csv(file.path("data", "export_dense_all.csv"))
 
 cat("=== RP-BNB on truck all crashes (Laplace) ===\n")
 cat("Dependence   : copula(\"", dependence$family, "\")\n", sep = "")
@@ -24,7 +17,7 @@ cat("Cores asked  :", n_cores, "\n")
 cat("Optimizer    :", optimizer, "\n")
 cat("Draws (if SML):", draws, "\n\n")
 
-f1 <- ALL_3  ~ LNAADT_3+SR40_MI3+MPD_ME+MPD_STD+IRI_ME+RUT_L+SP50GE+ACCPNTS+SIGNAL1+NEAR_SIG+AUXLNUM+DP10_ME
+f1 <- ALL_3  ~ LNAADT_3+SR40_MI3+MPD_ME+MPD_STD+IRI_ME+RUT_L+SP50GE+ACCPNTS+SIGNAL1+NEAR_SIG+AUXLNUM++DP10_ME
 f2 <- C_HV ~ LNAADT_3+SR40_MI3+MPD_ME+MPD_STD+IRI_ME+RUT_7+RUT_9+SP50GE+ACCPNTS+SIGNAL1+NEAR_SIG+AUXLNUM+DP01_ME
 r1 <- c("SR40_MI3")
 r2 <- c("SR40_MI3")
@@ -38,7 +31,7 @@ t_fit <- system.time(
   fit <- fit_rpbnb_tmb(
     formula_1  = f1,
     formula_2  = f2,
-    data       = truck_data,
+    data       = data,
     random_1   = r1,
     random_2   = r2,
     dependence = dependence,
@@ -46,15 +39,12 @@ t_fit <- system.time(
     method     = optimizer,
     draws = draws,
     # No max_workload override: the header's claim that the default suffices is
-    # only true if the guard is actually left on.  This fit's workload is
-    # nrow(data) * draws = 1.74e6, comfortably inside the default (which
-    # rpbnb_tmb_max_workload() sizes from available memory, so it is not a fixed
-    # number), so the guard costs nothing here and still catches an accidentally
-    # oversized respecification.
+    # only true if the guard is actually left on.
     control    = rpbnb_tmb_control(
       print_level = 1,
       n_cores     = n_cores,
-      max_threads = n_cores
+      max_threads = n_cores,
+      max_workload = Inf
     )
   )
 )[["elapsed"]]
@@ -72,37 +62,6 @@ cat(sprintf("Optimizer: code=%d, message=%s\n",
             fit$optimizer$convergence, fit$optimizer$message))
 cat("sdreport positive-definite Hessian:",
     if (isTRUE(fit$sdreport$pdHess)) "yes" else "no", "\n")
-
-# ---- Persist the fit ---------------------------------------------------
-# This fit costs ~55 min.  Without it on disk every follow-up diagnostic means
-# paying that again, so write it before any post-estimation step can fail.
-stamp <- format(Sys.time(), "%Y-%m-%d-%H%M%S")
-fit_path <- file.path("results", paste0("fit_normal_dense_", stamp, ".rds"))
-saveRDS(fit, fit_path)
-cat("Fit object saved to:", fit_path, "\n")
-
-# ---- Convergence diagnostics -------------------------------------------
-# print_level = 1 buries these under thousands of TMB inner-iteration lines, so
-# restate them loudly: a boundary-bound dispersion or a non-PD Hessian makes the
-# standard errors below meaningless, and that must not be easy to scroll past.
-diagnostics <- character(0)
-if (!isTRUE(fit$sdreport$pdHess)) {
-  diagnostics <- c(diagnostics,
-                   "Hessian is not positive definite: standard errors are unreliable.")
-}
-if (length(fit$boundary_report)) {
-  diagnostics <- c(diagnostics,
-                   paste0("Parameters at a constraint bound: ",
-                          paste(paste0(fit$boundary_report,
-                                       " (", fit$boundary_sides, ")"),
-                                collapse = ", ")))
-}
-if (length(diagnostics)) {
-  sep(); cat("CONVERGENCE WARNINGS\n"); sep()
-  cat(paste0("  * ", diagnostics, collapse = "\n"), "\n")
-} else {
-  cat("No boundary or Hessian warnings.\n")
-}
 
 # ---- Model summary -----------------------------------------------------
 sep(); cat("MODEL SUMMARY\n"); sep()
