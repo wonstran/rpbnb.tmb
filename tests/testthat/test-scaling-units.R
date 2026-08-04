@@ -114,6 +114,38 @@ test_that("raw_scale adds a section and is absent by default", {
                     "## Elasticities / semi-elasticities (AME)") %in% report))
 })
 
+test_that("coef_orig_units adds a section and is absent by default", {
+  results_dir <- file.path(tempdir(), "truck-results-coefunits")
+  unlink(results_dir, recursive = TRUE)
+  args <- list(model_summary = "Summary: fitted model",
+               marginal_effects = "x  1.25",
+               elasticities = "x  0.50",
+               results_dir = results_dir,
+               timestamp = as.POSIXct("2026-08-03 10:53:08", tz = "UTC"))
+
+  plain <- readLines(do.call(rpbnb.tmb:::.write_truck_results_markdown, args),
+                     warn = FALSE)
+  expect_false(any(grepl("## Coefficients in original units",
+                         plain, fixed = TRUE)))
+
+  withr <- do.call(rpbnb.tmb:::.write_truck_results_markdown,
+                   c(args, list(coef_orig_units = c("b1:x  -0.0394  0.0061",
+                                                    "b2:x  -0.0199  0.0109"),
+                                scaling = list(x = c(center = 45, scale = 6)))))
+  report <- readLines(withr, warn = FALSE)
+  expect_true(any(grepl("## Coefficients in original units",
+                        report, fixed = TRUE)))
+  expect_true(any(grepl("b1:x  -0.0394  0.0061", report, fixed = TRUE)))
+  expect_true(any(grepl("center =      45.0000   scale =       6.0000", report)))
+  # Additive: the original sections survive unchanged, and the new section
+  # precedes the AME sections (it restates the model fit summary).
+  expect_true(all(c("## Model fit summary",
+                    "## Average marginal effects (AME)",
+                    "## Elasticities / semi-elasticities (AME)") %in% report))
+  expect_lt(match("## Coefficients in original units", report),
+            match("## Average marginal effects (AME)", report))
+})
+
 # `LNAADT_3` is log(AADT).  Fed to the elasticity formula as an ordinary
 # regressor it returns x-bar * b = 8.59 -- the elasticity with respect to the
 # LOG of traffic.  The elasticity with respect to traffic is b itself, 0.871.

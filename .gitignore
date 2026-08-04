@@ -20,3 +20,6 @@ src/*.o
 dist/
 *.Rcheck/
 *.tar.gz
+
+# Generated fit/report output
+results/

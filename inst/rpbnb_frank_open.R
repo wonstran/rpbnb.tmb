@@ -5,10 +5,10 @@
 # later, at the exporter.  The source tree carries the same version number, so
 # the version string cannot tell the two apart.  Switch back to library() only
 # after a version bump and devtools::install().
-devtools::load_all("/home/wonstran/repos/rpbnb.tmb")
+devtools::load_all("D:\\apps\\rpbnb.tmb\\")
 
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
-setwd("/home/wonstran/repos/truck")
+setwd("D:\\apps\\rpbnb.tmb")
 # detectCores() returns 32 on this box, and 32 threads is what killed the
 # rsession during the dense Gaussian fit: TMB gives each thread its own tape and
 # Hessian workspace, so the process reached 62 GB resident (90 GB virtual)
@@ -17,13 +17,13 @@ setwd("/home/wonstran/repos/truck")
 # parallel_tape = TRUE (see R/tmb_helpers.R:79), which is not set here, so the
 # guard scored this fit at a few thousand against a budget of 4e6.
 # 8 threads is the configuration that has actually completed.
-n_cores <- 18L
+n_cores <- 12L
 draws <- 500L
-dependence <- copula("kimeldorf")
+dependence <- copula("frank") #copula("kimeldorf")
 
-# Path components stay separate: "inst\\extdata" is one directory named
-# inst\extdata on POSIX, so the backslash form only resolves on Windows.
-data <- read.csv(file.path("data", "export_open_all.csv"))
+# setwd() is at the project root; file.path() builds the platform-native
+# separator, so this resolves on both Windows and POSIX.
+data <- read.csv(file.path("inst", "extdata", "export_open_all.csv"))
 
 # ---- Standardize the continuous predictors ---------------------------------
 # Both random-coefficient carriers are strictly positive and bounded away from
@@ -106,6 +106,7 @@ cat("sdreport positive-definite Hessian:",
 # regenerated without paying for the fit again, so the two are saved together.
 stamp <- format(Sys.time(), "%Y-%m-%d-%H%M%S")
 fit_path <- file.path("results", paste0("fit_frank_open_centered_", stamp, ".rds"))
+dir.create("results", recursive = TRUE, showWarnings = FALSE)
 saveRDS(list(fit = fit, scaling = scaling), fit_path)
 cat("Fit object saved to:", fit_path, "\n")
 
@@ -136,6 +137,79 @@ if (length(diagnostics)) {
 sep(); cat("MODEL SUMMARY\n"); sep()
 model_summary_output <- capture.output(summary(fit))
 cat(model_summary_output, sep = "\n")
+cat("\n")
+
+# ---- Coefficients in original units (display) -------------------------------
+# The fit above is on standardized predictors, so each continuous coefficient
+# is per standard deviation.  Because the standardization is an affine column
+# transform, the original-unit coefficients are exact and need no refit:
+# slopes divide by the scale, the intercept absorbs the centring shift
+# -sum_j (c_j / s_j) * b_j, and binary 0/1 coefficients are unchanged.  SEs are
+# delta-method on the full covariance, so the intercept's cross-covariances
+# with the slopes count.  Random-coefficient SDs rescale the same way as
+# slopes and are shown per equation in the same format as `summary(fit)`:
+# Estimate_log is the log of the original-unit SD (derived, = log_sd - log
+# scale), its Std. Error is the fitted log-scale SE (unchanged by the constant
+# shift), and Pr(>|z|)/Signif follow.  This section is for display only; the
+# fitted design itself stays
+# standardized (see the note at the end of the original-units section).  The
+# tables use the same fixed-decimal format and significance stars as
+# `summary(fit)` (.print_tbl), so the two summaries line up.  The captured
+# output is passed to the markdown exporter below as `coef_orig_units`.
+sep(); cat("COEFFICIENTS IN ORIGINAL UNITS\n"); sep()
+sc_mat <- do.call(rbind, scaling)
+coef_orig_units <- function(eq) {
+  nm <- names(fit$coef)
+  idx <- grep(paste0("^b", eq, ":"), nm)
+  var <- sub(paste0("^b", eq, ":"), "", nm[idx])
+  A <- diag(length(idx))
+  dimnames(A) <- list(nm[idx], nm[idx])
+  cont <- which(var %in% continuous_vars & var != "(Intercept)")
+  A[cont, cont] <- diag(1 / sc_mat[var[cont], "scale"])
+  A[var == "(Intercept)", cont] <-
+    -sc_mat[var[cont], "center"] / sc_mat[var[cont], "scale"]
+  V <- fit$vcov
+  if (is.null(rownames(V))) dimnames(V) <- list(names(fit$coef), names(fit$coef))
+  b_orig  <- as.vector(A %*% fit$coef[idx])
+  se_orig <- sqrt(pmax(diag(A %*% V[nm[idx], nm[idx]] %*% t(A)), 0))
+  z_orig  <- b_orig / se_orig
+  p_orig  <- 2 * pnorm(-abs(z_orig))
+  data.frame(
+    Estimate = b_orig,
+    `Std. Error` = se_orig,
+    `z value` = z_orig,
+    `Pr(>|z|)` = p_orig,
+    Signif = rpbnb.tmb:::.signif_stars(p_orig),
+    row.names = nm[idx], check.names = FALSE
+  )
+}
+coef_orig_units_output <- capture.output({
+  cat("\n--- Equation 1 (y1) ---\n")
+  rpbnb.tmb:::.print_tbl(coef_orig_units(1L))
+  cat("\n--- Equation 2 (y2) ---\n")
+  rpbnb.tmb:::.print_tbl(coef_orig_units(2L))
+  # Random-coefficient SDs, per equation and in the model summary's format.
+  cat("\n--- Random-coefficient SDs (equation 1) ---\n")
+  sd_orig_units <- function(prefix) {
+    nm <- names(fit$coef)
+    idx <- grep(paste0("^", prefix, ":"), nm)
+    var <- sub(paste0("^", prefix, ":"), "", nm[idx])
+    log_orig <- fit$coef[idx] - log(sc_mat[var, "scale"])
+    pval <- 2 * pnorm(-abs(log_orig / fit$se[idx]))
+    data.frame(
+      Estimate_log = log_orig,
+      Estimate = exp(log_orig),
+      `Std. Error` = fit$se[idx],
+      `Pr(>|z|)` = pval,
+      Signif = rpbnb.tmb:::.signif_stars(pval),
+      row.names = sub("^log_", "", nm[idx]), check.names = FALSE
+    )
+  }
+  rpbnb.tmb:::.print_tbl(sd_orig_units("log_sd1"))
+  cat("\n--- Random-coefficient SDs (equation 2) ---\n")
+  rpbnb.tmb:::.print_tbl(sd_orig_units("log_sd2"))
+})
+cat(coef_orig_units_output, sep = "\n")
 cat("\n")
 
 # ---- Fitted means (predict) ---------------------------------------------
@@ -200,6 +274,7 @@ results_path <- rpbnb.tmb:::.write_truck_results_markdown(
   dependence = fit$dependence,
   method = fit$method,
   raw_scale = raw_scale_output,
-  scaling = scaling
+  scaling = scaling,
+  coef_orig_units = coef_orig_units_output
 )
 cat("Results written to:", results_path, "\n")

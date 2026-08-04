@@ -16,6 +16,7 @@
     method = NULL,
     raw_scale = NULL,
     scaling = NULL,
+    coef_orig_units = NULL,
     results_dir = "results",
     timestamp = Sys.time()) {
   dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
@@ -40,6 +41,34 @@
     )
   }
 
+  # The coefficient table in "Model fit summary" is per standard deviation of
+  # each continuous predictor once the design was standardized.  When the
+  # caller supplies the original-unit restatement (an affine transform of the
+  # standardized estimates computed by the fit script), it is shown right
+  # after the summary so the two are read together.
+  coef_orig_units_section <- character(0)
+  if (!is.null(coef_orig_units)) {
+    coef_orig_units_section <- c(
+      "",
+      "## Coefficients in original units",
+      "",
+      paste(
+        "The design was standardized before fitting, so the coefficient table",
+        "above is per standard deviation of each continuous predictor.  The",
+        "table below restates the same fit in the covariates' original units:",
+        "continuous slopes divide by the scale, the intercept absorbs the",
+        "centring shift, and binary 0/1 coefficients are unchanged.  Standard",
+        "errors are delta-method on the full covariance.  These tables are for",
+        "display; the fitted design itself remains standardized."
+      ),
+      "",
+      "```text",
+      .scaling_note(scaling),
+      coef_orig_units,
+      "```"
+    )
+  }
+
   # A standardized design makes the two sections above unreadable in opposite
   # ways, and silently: a scaled coefficient's effect is per standard deviation
   # rather than per unit, and a CENTRED regressor has sample mean zero, which
@@ -51,13 +80,7 @@
   # recorded, rather than leaving the reader to notice.
   raw_scale_section <- character(0)
   if (!is.null(raw_scale)) {
-    scaling_note <- if (!is.null(scaling)) {
-      tab <- do.call(rbind, lapply(names(scaling), function(v) {
-        sprintf("  %-12s center = %12.4f   scale = %12.4f",
-                v, scaling[[v]][["center"]], scaling[[v]][["scale"]])
-      }))
-      c("Standardization applied before fitting:", "", as.vector(tab), "")
-    }
+    scaling_note <- .scaling_note(scaling)
     raw_scale_section <- c(
       "",
       "## Marginal effects and elasticities in original units",
@@ -91,6 +114,7 @@
     "```text",
     model_summary,
     "```",
+    coef_orig_units_section,
     "",
     "## Average marginal effects (AME)",
     "",
@@ -108,6 +132,18 @@
 
   writeLines(report, output_path, useBytes = TRUE)
   invisible(output_path)
+}
+
+# Standardization note shared by the two "original units" sections: the raw
+# center/scale table for the continuous predictors.  NULL when the transform
+# was not supplied (c() drops it, so the surrounding section still renders).
+.scaling_note <- function(scaling) {
+  if (is.null(scaling)) return(NULL)
+  tab <- do.call(rbind, lapply(names(scaling), function(v) {
+    sprintf("  %-12s center = %12.4f   scale = %12.4f",
+            v, scaling[[v]][["center"]], scaling[[v]][["scale"]])
+  }))
+  c("Standardization applied before fitting:", "", as.vector(tab), "")
 }
 
 # A human-readable name for whatever `fit$dependence` holds.  deparse() is what
