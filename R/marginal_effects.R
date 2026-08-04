@@ -360,12 +360,14 @@ rpbnb_tmb_elasticities <- function(fit,
   }
 
   # ---- Assemble output ----
+  pval <- 2 * pnorm(-abs(res / se))
   tab <- data.frame(
     Name = cn[sel],
     Estimate = res,
     `Std. Error` = se,
     `z value` = res / se,
-    `Pr(>|z|)` = 2 * pnorm(-abs(res / se)),
+    `Pr(>|z|)` = pval,
+    Signif = .signif_stars(pval),
     Type = ifelse(
       is_bin,
       if (quantity == "me") "binary" else "semi-elas",
