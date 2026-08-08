@@ -595,6 +595,37 @@ Type gaussian_cell_prob(Type qa, Type qam, Type qb, Type qbm, Type rho) {
   return total;
 }
 
+// Checkpointed form of gaussian_cell_prob().  Inlined, the kernel above puts
+// ~1,500 operations on the tape per observation-draw -- (NCUT+1) panels x 16
+// nodes, each with two pnorm() calls and a dnorm() -- which is ~90% of the
+// gaussian SML tape and is what priced 300 draws on the truck data at ~44 GiB
+// of retained tape and a ~177 GiB construction peak.  REGISTER_ATOMIC turns
+// the kernel into an atomic symbol that costs ONE tape operation per call
+// (O(n+m) memory per occurrence, independent of the kernel's flops): the
+// kernel is taped once -- to third-order nesting under CPPAD_FRAMEWORK, so
+// the Laplace path's nested sweeps still differentiate through it -- and
+// those inner tapes are replayed on demand, with per-thread copies for the
+// parallel regions.
+//
+// Replaying a tape recorded at one input on other inputs is only valid
+// because the kernel is branch-free: every branch above is a CppAD::CondExp
+// and both loop bounds are compile-time constants, so the recorded graph is
+// identical at every input.  Do NOT add a value-dependent if() or a
+// data-dependent loop to gaussian_cell_prob() without removing this wrapper.
+//
+// Under CPPAD_FRAMEWORK the inner tapes are built on the FIRST call with
+// double arguments, and taping of the parallel regions runs concurrently, so
+// the objective triggers that initialization explicitly inside an OpenMP
+// critical section before any AD call can race on it (see the FAM_GAUSSIAN
+// block ahead of the accumulation loop).
+template<class Type>
+vector<Type> gauss_cell_vec(vector<Type> x) {
+  vector<Type> y(1);
+  y[0] = gaussian_cell_prob(x[0], x[1], x[2], x[3], x[4]);
+  return y;
+}
+REGISTER_ATOMIC(gauss_cell_vec)
+
 template<class Type>
 Type objective_function<Type>::operator() () {
 
@@ -776,6 +807,24 @@ Type objective_function<Type>::operator() () {
     }
   }
 
+  // One-time construction of the checkpointed gaussian kernel's inner tapes
+  // (see gauss_cell_vec above).  The double call is what builds them; the
+  // evaluation point is arbitrary because the kernel is branch-free.  It must
+  // happen before any AD call to gauss_cell_vec(), and region tapes are built
+  // concurrently, so the guard is a critical section rather than an
+  // assumption about which thread tapes first.
+  if (family == FAM_GAUSSIAN) {
+#ifdef _OPENMP
+#pragma omp critical(gauss_cell_vec_init)
+#endif
+    {
+      vector<double> qinit(5);
+      qinit(0) = -0.5; qinit(1) = -1.0; qinit(2) = -0.5; qinit(3) = -1.0;
+      qinit(4) = 0.1;
+      gauss_cell_vec(qinit);
+    }
+  }
+
   // TMB partitions these independent observation contributions across its
   // configured OpenMP regions while keeping each draw reduction local.
   parallel_accumulator<Type> nll(this);
@@ -907,8 +956,13 @@ Type objective_function<Type>::operator() () {
                                  Type(1.0 - 1e-15), p);
             return qnorm(p);
           };
-          p_obs = gaussian_cell_prob(safe_qnorm(a1), safe_qnorm(a1m),
-                                     safe_qnorm(b1), safe_qnorm(b1m), rho);
+          vector<Type> qcell(5);
+          qcell(0) = safe_qnorm(a1);
+          qcell(1) = safe_qnorm(a1m);
+          qcell(2) = safe_qnorm(b1);
+          qcell(3) = safe_qnorm(b1m);
+          qcell(4) = rho;
+          p_obs = gauss_cell_vec(qcell)(0);
         } else {
           p_obs = clayton_cell_prob(la1, la1m, lpmf1, lb1, lb1m, lpmf2,
                                     theta, y1_zero, y2_zero);

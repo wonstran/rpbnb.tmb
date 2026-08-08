@@ -12,3 +12,4 @@
 ^\.\.Rcheck$
 ^.*\.tar\.gz$
 ^\.claude$
+^\.posit/assistant$

@@ -5,21 +5,33 @@
 # later, at the exporter.  The source tree carries the same version number, so
 # the version string cannot tell the two apart.  Switch back to library() only
 # after a version bump and devtools::install().
-devtools::load_all("D:\\apps\\rpbnb.tmb\\")
+devtools::load_all("C:\\Users\\zwang9\\repos\\rpbnb.tmb")
 
 sep <- function() cat("\n", paste(rep("=", 72), collapse = ""), "\n", sep = "")
-setwd("D:\\apps\\rpbnb.tmb")
-# detectCores() returns 32 on this box, and 32 threads is what killed the
-# rsession during the dense Gaussian fit: TMB gives each thread its own tape and
-# Hessian workspace, so the process reached 62 GB resident (90 GB virtual)
-# against 60 GB of RAM with no swap, and the kernel OOM-killer took it.  Nothing
-# warned first -- .check_tmb_workload() multiplies by n_threads only when
-# parallel_tape = TRUE (see R/tmb_helpers.R:79), which is not set here, so the
-# guard scored this fit at a few thousand against a budget of 4e6.
-# 8 threads is the configuration that has actually completed.
-n_cores <- 12L
+setwd("C:\\Users\\zwang9\\repos\\rpbnb.tmb")
+
+# detectCores() returns 24 on this box (31.5 GiB RAM).  8 threads, not more:
+# with tape.parallel off TMB still records one tape per parallel region, and
+# more regions buy eval speed, not construction speed.
+#
+# 300 draws is affordable ONLY because gaussian_cell_prob() is checkpointed
+# (REGISTER_ATOMIC in src/rpbnb.tmb.cpp): measured on this model at 8 threads,
+# peak working set is ~0.4 + 0.050 * draws GiB (0.56 GiB at 10 draws, 2.6 GiB
+# at 50), so 300 draws peaks around 13 GiB.  Before the checkpoint the same
+# kernel cost ~0.57 GiB of peak PER DRAW -- ~177 GiB at 300 draws, the
+# std::bad_alloc this comment replaces -- because the taped quadrature ran
+# ~112 pnorm/dnorm nodes per observation-draw and this data also tapes NB CDF
+# sums out to counts of ~242.  TAPE_CALIBRATION's per-unit constant is ~22x
+# too optimistic for exactly that reason (its fixture uses Poisson(2) counts),
+# so do not trust the workload guard's arithmetic on this data; trust the
+# probe: run MakeADFun + one fn()/gr() at two small draw counts and
+# extrapolate linearly before raising draws further.
+n_cores <- 20L
 draws <- 500L
-dependence <- copula("frank") #copula("kimeldorf")
+# "famoye" and "independence" are plain strings; only frank/normal/kimeldorf
+# go through copula().  The label below handles both shapes.
+dependence <- "famoye" #copula("frank") #copula("kimeldorf")
+est_method <- "laplace"
 
 # setwd() is at the project root; file.path() builds the platform-native
 # separator, so this resolves on both Windows and POSIX.
@@ -55,8 +67,13 @@ for (v in continuous_vars) {
 cat("Standardized (centred and scaled) predictors:\n")
 print(round(do.call(rbind, scaling), 4))
 
-cat("=== RP-BNB on truck all crashes (Laplace) ===\n")
-cat("Dependence   : copula(\"", dependence$family, "\")\n", sep = "")
+cat("=== RP-BNB on truck all crashes (", est_method, ") ===\n", sep = "")
+dep_label <- if (inherits(dependence, "rpbnb_copula")) {
+  paste0("copula(\"", dependence$family, "\")")
+} else {
+  dependence
+}
+cat("Dependence   :", dep_label, "\n")
 cat("Cores asked  :", n_cores, "\n")
 
 f1 <- ALL_3  ~ SR40_MI3 + MPD_ME + LNAADT_3 + IRI_ME + G_ABG2 + SP50LE + ACCPNTS + SIGNAL1 + NEAR_SIG + CS_MINAB + DP10_ME + RUT_L
@@ -71,10 +88,15 @@ t_fit <- system.time(
     formula_2  = f2,
     data       = data,
     random_1   = c("SR40_MI3", "MPD_ME"),
+    # The 40-draw fit estimated equation 2's SR40_MI3 random SD at exp(-12.4)
+    # ~= 0 with SE 156: the data carry no detectable slope heterogeneity in
+    # C_HV, and keeping the parameter just burns a Halton dimension and a row
+    # of the Hessian on noise.  Dropping it also makes the same draw count
+    # integrate a 2-D latent instead of a 3-D one.
     random_2   = c("SR40_MI3"),
     dependence = dependence,
     seed       = 20240712,
-    method     = "laplace",
+    method     = est_method,
     draws = draws,
     # No max_workload override: the header's claim that the default suffices is
     # only true if the guard is actually left on.
@@ -207,7 +229,11 @@ coef_orig_units_output <- capture.output({
   }
   rpbnb.tmb:::.print_tbl(sd_orig_units("log_sd1"))
   cat("\n--- Random-coefficient SDs (equation 2) ---\n")
-  rpbnb.tmb:::.print_tbl(sd_orig_units("log_sd2"))
+  if (any(grepl("^log_sd2:", names(fit$coef)))) {
+    rpbnb.tmb:::.print_tbl(sd_orig_units("log_sd2"))
+  } else {
+    cat("  (no random coefficients in equation 2)\n")
+  }
 })
 cat(coef_orig_units_output, sep = "\n")
 cat("\n")

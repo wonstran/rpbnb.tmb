@@ -23,3 +23,4 @@ dist/
 
 # Generated fit/report output
 results/
+.posit/assistant
